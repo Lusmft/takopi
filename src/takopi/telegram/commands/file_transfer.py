@@ -441,12 +441,24 @@ async def _save_file_put(
     )
 
 
+def _prompt_attachment_for_document(
+    document: TelegramDocument,
+    *,
+    path: Path,
+) -> PromptAttachment:
+    mime_type = document.mime_type
+    kind = "image" if mime_type is not None and mime_type.startswith("image/") else "document"
+    return PromptAttachment(kind=kind, path=path, mime_type=mime_type)
+
+
 async def _stage_file_put(
     cfg: TelegramBridgeConfig,
     msg: TelegramIncomingMessage,
+    *,
+    use_reply_document: bool = False,
 ) -> _StagedFilePut | None:
     reply = make_reply(cfg, msg)
-    document = msg.document
+    document = msg.reply_to_document if use_reply_document else msg.document
     if document is None:
         await reply(text=FILE_PUT_USAGE)
         return None
@@ -462,9 +474,7 @@ async def _stage_file_put(
     if result.rel_path is None or result.size is None:
         await reply(text="failed to stage file.")
         return None
-    mime_type = document.mime_type
-    kind = "image" if mime_type is not None and mime_type.startswith("image/") else "document"
-    attachment = PromptAttachment(kind=kind, path=result.rel_path, mime_type=mime_type)
+    attachment = _prompt_attachment_for_document(document, path=result.rel_path)
     return _StagedFilePut(path=result.rel_path, size=result.size, attachment=attachment)
 
 
@@ -563,9 +573,7 @@ async def _stage_file_put_group(
             message_id=msg.message_id + index,
         )
         if result.error is None and result.rel_path is not None and result.size is not None:
-            mime_type = document.mime_type
-            kind = "image" if mime_type is not None and mime_type.startswith("image/") else "document"
-            attachment = PromptAttachment(kind=kind, path=result.rel_path, mime_type=mime_type)
+            attachment = _prompt_attachment_for_document(document, path=result.rel_path)
             staged.append(_StagedFilePut(path=result.rel_path, size=result.size, attachment=attachment))
         else:
             failed.append(result)

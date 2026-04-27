@@ -1440,6 +1440,21 @@ async def run_main_loop(
                 except DirectiveError as exc:
                     await reply(text=f"error:\n{exc}")
                     return
+                if msg.reply_to_document is not None and not resolved.attachments:
+                    staged_reply = await stage_file_put(
+                        cfg,
+                        msg,
+                        use_reply_document=True,
+                    )
+                    if staged_reply is not None:
+                        resolved = ResolvedMessage(
+                            prompt=resolved.prompt,
+                            resume_token=resolved.resume_token,
+                            engine_override=resolved.engine_override,
+                            context=resolved.context,
+                            context_source=resolved.context_source,
+                            attachments=(staged_reply.attachment,),
+                        )
                 if pending.is_voice_transcribed:
                     resolved = ResolvedMessage(
                         prompt=f"(voice transcribed) {resolved.prompt}",
@@ -1451,6 +1466,11 @@ async def run_main_loop(
                     )
 
                 prompt_text = resolved.prompt
+                if resolved.attachments:
+                    prompt_text = _build_attachment_prompt(
+                        prompt_text,
+                        resolved.attachments,
+                    )
                 if pending.forwards:
                     forwarded = [
                         text

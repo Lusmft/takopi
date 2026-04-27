@@ -82,7 +82,11 @@ class Sticker(msgspec.Struct, forbid_unknown_fields=False):
 class MessageReply(msgspec.Struct, forbid_unknown_fields=False):
     message_id: int
     text: str | None = None
+    caption: str | None = None
     from_: User | None = msgspec.field(default=None, name="from")
+    document: Document | None = None
+    video: Video | None = None
+    photo: list[PhotoSize] | None = None
 
 
 class Message(msgspec.Struct, forbid_unknown_fields=False):

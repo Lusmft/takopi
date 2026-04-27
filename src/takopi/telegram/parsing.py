@@ -102,7 +102,18 @@ def _parse_incoming_message(
         return None
     reply = msg.reply_to_message
     reply_to_message_id = reply.message_id if reply is not None else None
-    reply_to_text = reply.text if reply is not None else None
+    reply_to_text = (
+        reply.text if reply is not None and reply.text is not None else reply.caption if reply is not None else None
+    )
+    reply_to_document: TelegramDocument | None = None
+    if reply is not None and reply.document is not None:
+        reply_to_document = _document_from_media(reply.document)
+    if reply_to_document is None and reply is not None and reply.video is not None:
+        reply_to_document = _document_from_media(reply.video)
+    if reply_to_document is None and reply is not None:
+        best_reply_photo = _best_photo(reply.photo)
+        if best_reply_photo is not None:
+            reply_to_document = _document_from_photo(best_reply_photo)
     reply_to_is_bot = (
         reply.from_.is_bot if reply is not None and reply.from_ is not None else None
     )
@@ -127,6 +138,7 @@ def _parse_incoming_message(
         reply_to_text=reply_to_text,
         reply_to_is_bot=reply_to_is_bot,
         reply_to_username=reply_to_username,
+        reply_to_document=reply_to_document,
         sender_id=sender_id,
         media_group_id=media_group_id,
         thread_id=thread_id,
