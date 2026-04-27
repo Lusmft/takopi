@@ -1229,7 +1229,7 @@ async def run_main_loop(
                 base: str,
                 attachments: Sequence[PromptAttachment],
             ) -> str:
-                block = format_attachment_block(list(attachments))
+                block = format_attachment_block(list(attachments), user_prompt=base)
                 if base and base.strip():
                     return f"{base}\n\n{block}" if block else base
                 return block

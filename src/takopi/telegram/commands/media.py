@@ -116,7 +116,8 @@ async def _handle_media_group(
                 await reply(text=FILE_PUT_USAGE)
                 return
             prompt = format_attachment_block(
-                [item.attachment for item in staged_group.staged]
+                [item.attachment for item in staged_group.staged],
+                user_prompt=resolved.prompt,
             )
             if resolved.prompt and resolved.prompt.strip():
                 prompt = f"{resolved.prompt}\n\n{prompt}" if prompt else resolved.prompt
