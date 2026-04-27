@@ -16,6 +16,7 @@ from .file_transfer import (
     _format_file_put_failures,
     _handle_file_put_group,
     _save_file_put_group,
+    _stage_file_put_group,
 )
 from .parse import _parse_slash_command
 from .reply import make_reply
@@ -92,35 +93,28 @@ async def _handle_media_group(
                 )
             if resolved is None:
                 return
-            saved_group = await _save_file_put_group(
+            staged_group = await _stage_file_put_group(
                 cfg,
                 command_msg,
-                "",
                 ordered,
-                resolved.context,
-                topic_store,
             )
-            if saved_group is None:
+            if staged_group is None:
                 return
-            if not saved_group.saved:
-                failure_text = _format_file_put_failures(saved_group.failed)
-                text = "failed to upload files."
+            if not staged_group.staged:
+                failure_text = _format_file_put_failures(staged_group.failed)
+                text = "failed to stage files."
                 if failure_text is not None:
                     text = f"{text}\n\n{failure_text}"
                 await reply(text=text)
                 return
-            if saved_group.failed:
-                failure_text = _format_file_put_failures(saved_group.failed)
+            if staged_group.failed:
+                failure_text = _format_file_put_failures(staged_group.failed)
                 if failure_text is not None:
                     await reply(text=f"some files failed to upload.\n\n{failure_text}")
             if run_prompt is None:
                 await reply(text=FILE_PUT_USAGE)
                 return
-            paths = [
-                item.rel_path.as_posix()
-                for item in saved_group.saved
-                if item.rel_path is not None
-            ]
+            paths = [item.path.as_posix() for item in staged_group.staged]
             files_text = "\n".join(f"- {path}" for path in paths)
             prompt_base = resolved.prompt
             annotation = f"[uploaded files]\n{files_text}"

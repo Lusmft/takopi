@@ -9,6 +9,8 @@ from .executor import _should_show_resume_line as should_show_resume_line
 from .file_transfer import _handle_file_command as handle_file_command
 from .file_transfer import _handle_file_put_default as handle_file_put_default
 from .file_transfer import _save_file_put as save_file_put
+from .file_transfer import _stage_file_put as stage_file_put
+from .file_transfer import _stage_file_put_group as stage_file_put_group
 from .media import _handle_media_group as handle_media_group
 from .menu import _reserved_commands as get_reserved_commands
 from .menu import _set_command_menu as set_command_menu
@@ -40,6 +42,8 @@ __all__ = [
     "parse_slash_command",
     "run_engine",
     "save_file_put",
+    "stage_file_put",
+    "stage_file_put_group",
     "set_command_menu",
     "should_show_resume_line",
 ]

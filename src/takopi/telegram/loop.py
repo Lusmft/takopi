@@ -45,6 +45,7 @@ from .commands.handlers import (
     get_reserved_commands,
     run_engine,
     save_file_put,
+    stage_file_put,
     set_command_menu,
     should_show_resume_line,
 )
@@ -1497,16 +1498,13 @@ async def run_main_loop(
                 )
                 if resolved is None:
                     return
-                saved = await save_file_put(
+                staged = await stage_file_put(
                     cfg,
                     msg,
-                    "",
-                    resolved.context,
-                    topic_store,
                 )
-                if saved is None:
+                if staged is None:
                     return
-                annotation = f"[uploaded file: {saved.rel_path.as_posix()}]"
+                annotation = f"[uploaded file: {staged.path.as_posix()}]"
                 prompt = _build_upload_prompt(resolved.prompt, annotation)
                 await run_prompt_from_upload(msg, prompt, resolved)
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+import tempfile
+import uuid
 from typing import TYPE_CHECKING
 
 from ...config import ConfigError
@@ -64,6 +66,22 @@ class _SavedFilePutGroup:
     base_dir: Path | None
     saved: list[_FilePutResult]
     failed: list[_FilePutResult]
+
+
+@dataclass(slots=True)
+class _StagedFilePut:
+    path: Path
+    size: int
+
+
+@dataclass(slots=True)
+class _StagedFilePutGroup:
+    staged: list[_StagedFilePut]
+    failed: list[_FilePutResult]
+
+
+def _stage_uploads_root() -> Path:
+    return Path(tempfile.gettempdir()) / "takopi-uploads"
 
 
 def resolve_file_put_paths(
@@ -282,6 +300,68 @@ async def _save_document_payload(
     )
 
 
+async def _stage_document_payload(
+    cfg: TelegramBridgeConfig,
+    *,
+    document: TelegramDocument,
+    chat_id: int,
+    message_id: int,
+) -> _FilePutResult:
+    name = default_upload_name(document.file_name, None)
+    if (
+        document.file_size is not None
+        and document.file_size > cfg.files.max_upload_bytes
+    ):
+        return _FilePutResult(
+            name=name,
+            rel_path=None,
+            size=None,
+            error="file is too large to upload.",
+        )
+    file_info = await cfg.bot.get_file(document.file_id)
+    if file_info is None:
+        return _FilePutResult(
+            name=name,
+            rel_path=None,
+            size=None,
+            error="failed to fetch file metadata.",
+        )
+    file_path = file_info.file_path
+    name = default_upload_name(document.file_name, file_path)
+    payload = await cfg.bot.download_file(file_path)
+    if payload is None:
+        return _FilePutResult(
+            name=name,
+            rel_path=None,
+            size=None,
+            error="failed to download file.",
+        )
+    if len(payload) > cfg.files.max_upload_bytes:
+        return _FilePutResult(
+            name=name,
+            rel_path=None,
+            size=None,
+            error="file is too large to upload.",
+        )
+    target_dir = _stage_uploads_root() / str(chat_id) / str(message_id)
+    target = target_dir / f"{uuid.uuid4().hex[:12]}-{name}"
+    try:
+        write_bytes_atomic(target, payload)
+    except OSError as exc:
+        return _FilePutResult(
+            name=name,
+            rel_path=None,
+            size=None,
+            error=f"failed to write file: {exc}",
+        )
+    return _FilePutResult(
+        name=name,
+        rel_path=target,
+        size=len(payload),
+        error=None,
+    )
+
+
 async def _handle_file_command(
     cfg: TelegramBridgeConfig,
     msg: TelegramIncomingMessage,
@@ -359,6 +439,30 @@ async def _save_file_put(
     )
 
 
+async def _stage_file_put(
+    cfg: TelegramBridgeConfig,
+    msg: TelegramIncomingMessage,
+) -> _StagedFilePut | None:
+    reply = make_reply(cfg, msg)
+    document = msg.document
+    if document is None:
+        await reply(text=FILE_PUT_USAGE)
+        return None
+    result = await _stage_document_payload(
+        cfg,
+        document=document,
+        chat_id=msg.chat_id,
+        message_id=msg.message_id,
+    )
+    if result.error is not None:
+        await reply(text=result.error)
+        return None
+    if result.rel_path is None or result.size is None:
+        await reply(text="failed to stage file.")
+        return None
+    return _StagedFilePut(path=result.rel_path, size=result.size)
+
+
 async def _handle_file_put(
     cfg: TelegramBridgeConfig,
     msg: TelegramIncomingMessage,
@@ -432,6 +536,32 @@ async def _handle_file_put_group(
     if failure_text is not None:
         text = f"{text}\n\n{failure_text}"
     await reply(text=text)
+
+
+async def _stage_file_put_group(
+    cfg: TelegramBridgeConfig,
+    msg: TelegramIncomingMessage,
+    messages: Sequence[TelegramIncomingMessage],
+) -> _StagedFilePutGroup | None:
+    reply = make_reply(cfg, msg)
+    documents = [item.document for item in messages if item.document is not None]
+    if not documents:
+        await reply(text=FILE_PUT_USAGE)
+        return None
+    staged: list[_StagedFilePut] = []
+    failed: list[_FilePutResult] = []
+    for index, document in enumerate(documents):
+        result = await _stage_document_payload(
+            cfg,
+            document=document,
+            chat_id=msg.chat_id,
+            message_id=msg.message_id + index,
+        )
+        if result.error is None and result.rel_path is not None and result.size is not None:
+            staged.append(_StagedFilePut(path=result.rel_path, size=result.size))
+        else:
+            failed.append(result)
+    return _StagedFilePutGroup(staged=staged, failed=failed)
 
 
 async def _save_file_put_group(
