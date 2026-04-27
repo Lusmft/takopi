@@ -7,6 +7,7 @@ import tempfile
 import uuid
 from typing import TYPE_CHECKING
 
+from ...attachments import PromptAttachment
 from ...config import ConfigError
 from ...context import RunContext
 from ...directives import DirectiveError
@@ -72,6 +73,7 @@ class _SavedFilePutGroup:
 class _StagedFilePut:
     path: Path
     size: int
+    attachment: PromptAttachment
 
 
 @dataclass(slots=True)
@@ -460,7 +462,10 @@ async def _stage_file_put(
     if result.rel_path is None or result.size is None:
         await reply(text="failed to stage file.")
         return None
-    return _StagedFilePut(path=result.rel_path, size=result.size)
+    mime_type = document.mime_type
+    kind = "image" if mime_type is not None and mime_type.startswith("image/") else "document"
+    attachment = PromptAttachment(kind=kind, path=result.rel_path, mime_type=mime_type)
+    return _StagedFilePut(path=result.rel_path, size=result.size, attachment=attachment)
 
 
 async def _handle_file_put(
@@ -558,7 +563,10 @@ async def _stage_file_put_group(
             message_id=msg.message_id + index,
         )
         if result.error is None and result.rel_path is not None and result.size is not None:
-            staged.append(_StagedFilePut(path=result.rel_path, size=result.size))
+            mime_type = document.mime_type
+            kind = "image" if mime_type is not None and mime_type.startswith("image/") else "document"
+            attachment = PromptAttachment(kind=kind, path=result.rel_path, mime_type=mime_type)
+            staged.append(_StagedFilePut(path=result.rel_path, size=result.size, attachment=attachment))
         else:
             failed.append(result)
     return _StagedFilePutGroup(staged=staged, failed=failed)

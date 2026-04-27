@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from .attachments import PromptAttachment
 from .config import ConfigError, ProjectsConfig
 from .context import RunContext
 from .directives import (
@@ -35,6 +36,7 @@ class ResolvedMessage:
     engine_override: EngineId | None
     context: RunContext | None
     context_source: ContextSource = "none"
+    attachments: tuple[PromptAttachment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

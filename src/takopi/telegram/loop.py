@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, cast
 import anyio
 from anyio.abc import TaskGroup
 
+from ..attachments import PromptAttachment, format_attachment_block
 from ..config import ConfigError
 from ..config_watch import ConfigReload, watch_config as watch_config_changes
 from ..commands import list_command_ids
@@ -1224,10 +1225,14 @@ async def run_main_loop(
                     return None
                 return _topic_key(msg, cfg, scope_chat_ids=state.topics_chat_ids)
 
-            def _build_upload_prompt(base: str, annotation: str) -> str:
+            def _build_attachment_prompt(
+                base: str,
+                attachments: Sequence[PromptAttachment],
+            ) -> str:
+                block = format_attachment_block(list(attachments))
                 if base and base.strip():
-                    return f"{base}\n\n{annotation}"
-                return annotation
+                    return f"{base}\n\n{block}" if block else base
+                return block
 
             async def resolve_prompt_message(
                 msg: TelegramIncomingMessage,
@@ -1442,6 +1447,7 @@ async def run_main_loop(
                         engine_override=resolved.engine_override,
                         context=resolved.context,
                         context_source=resolved.context_source,
+                        attachments=resolved.attachments,
                     )
 
                 prompt_text = resolved.prompt
@@ -1504,9 +1510,22 @@ async def run_main_loop(
                 )
                 if staged is None:
                     return
-                annotation = f"[uploaded file: {staged.path.as_posix()}]"
-                prompt = _build_upload_prompt(resolved.prompt, annotation)
-                await run_prompt_from_upload(msg, prompt, resolved)
+                prompt = _build_attachment_prompt(
+                    resolved.prompt,
+                    [staged.attachment],
+                )
+                await run_prompt_from_upload(
+                    msg,
+                    prompt,
+                    ResolvedMessage(
+                        prompt=resolved.prompt,
+                        resume_token=resolved.resume_token,
+                        engine_override=resolved.engine_override,
+                        context=resolved.context,
+                        context_source=resolved.context_source,
+                        attachments=(staged.attachment,),
+                    ),
+                )
 
             media_group_buffer = MediaGroupBuffer(
                 task_group=tg,

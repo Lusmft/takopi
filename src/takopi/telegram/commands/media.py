@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
 
+from ...attachments import format_attachment_block
 from ...context import RunContext
 from ...directives import DirectiveError
 from ...transport_runtime import ResolvedMessage
@@ -114,15 +115,23 @@ async def _handle_media_group(
             if run_prompt is None:
                 await reply(text=FILE_PUT_USAGE)
                 return
-            paths = [item.path.as_posix() for item in staged_group.staged]
-            files_text = "\n".join(f"- {path}" for path in paths)
-            prompt_base = resolved.prompt
-            annotation = f"[uploaded files]\n{files_text}"
-            if prompt_base and prompt_base.strip():
-                prompt = f"{prompt_base}\n\n{annotation}"
-            else:
-                prompt = annotation
-            await run_prompt(command_msg, prompt, resolved)
+            prompt = format_attachment_block(
+                [item.attachment for item in staged_group.staged]
+            )
+            if resolved.prompt and resolved.prompt.strip():
+                prompt = f"{resolved.prompt}\n\n{prompt}" if prompt else resolved.prompt
+            await run_prompt(
+                command_msg,
+                prompt,
+                ResolvedMessage(
+                    prompt=resolved.prompt,
+                    resume_token=resolved.resume_token,
+                    engine_override=resolved.engine_override,
+                    context=resolved.context,
+                    context_source=resolved.context_source,
+                    attachments=tuple(item.attachment for item in staged_group.staged),
+                ),
+            )
             return
         if not caption_text:
             await _handle_file_put_group(
