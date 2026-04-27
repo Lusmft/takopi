@@ -17,6 +17,9 @@ _BULLET_RE = re.compile(r"(?m)^(\s*)•")
 _FENCE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>[`~]{3,})(?P<info>.*)$")
 _ORDERED_ITEM_RE = re.compile(r"^(?P<indent>[ \t]{0,3})(?P<marker>\d+[.)])\s+")
 _UNORDERED_ITEM_RE = re.compile(r"^(?P<indent>[ \t]{0,3})[-+*]\s+")
+_TABLE_RE = re.compile(
+    r"(?m)^\|(.+)\|[ \t]*\n\|[ \t:]*[-:]+[-| :\t]*\|[ \t]*\n((?:\|.+\|[ \t]*\n?)+)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,8 +76,31 @@ def _normalize_nested_list_markers(md: str) -> str:
     return "".join(lines)
 
 
+def _convert_tables_to_lists(md: str) -> str:
+    """Convert markdown tables to bullet lists for Telegram compatibility."""
+
+    def _table_to_list(match: re.Match[str]) -> str:
+        headers = [header.strip() for header in match.group(1).split("|")]
+        rows_text = match.group(2).strip()
+        result: list[str] = []
+        for row_line in rows_text.split("\n"):
+            cells = [cell.strip() for cell in row_line.strip().strip("|").split("|")]
+            parts: list[str] = []
+            for index, cell in enumerate(cells):
+                if index < len(headers) and headers[index]:
+                    parts.append(f"**{headers[index]}:** {cell}")
+                else:
+                    parts.append(cell)
+            result.append("- " + " | ".join(parts))
+        return "\n".join(result) + "\n"
+
+    return _TABLE_RE.sub(_table_to_list, md)
+
+
 def render_markdown(md: str) -> tuple[str, list[dict[str, Any]]]:
-    html = _MD_RENDERER.render(_normalize_nested_list_markers(md or ""))
+    html = _MD_RENDERER.render(
+        _normalize_nested_list_markers(_convert_tables_to_lists(md or ""))
+    )
     rendered = transform_html(html)
 
     text = _BULLET_RE.sub(r"\1-", rendered.text)
