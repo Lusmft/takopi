@@ -71,6 +71,42 @@ def _format_error(error: Exception) -> str:
     return "\n".join(messages)
 
 
+def _fmt_k(value: int) -> str:
+    if value < 1000:
+        return str(value)
+    if value < 10000:
+        return f"{value / 1000:.1f}k"
+    return f"{value // 1000}k"
+
+
+def _format_usage_footer(usage: dict[str, object] | None) -> str | None:
+    if not usage:
+        return None
+    parts: list[str] = []
+    raw_usage = usage.get("usage")
+    if isinstance(raw_usage, dict):
+        input_tokens = raw_usage.get("input_tokens")
+        output_tokens = raw_usage.get("output_tokens")
+        cache_read = raw_usage.get("cache_read_input_tokens")
+        cache_new = raw_usage.get("cache_creation_input_tokens")
+        if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+            parts.append(f"🧮 {_fmt_k(input_tokens)}→{_fmt_k(output_tokens)}")
+        cache_bits: list[str] = []
+        if isinstance(cache_read, int) and cache_read > 0:
+            cache_bits.append(f"{_fmt_k(cache_read)} hit")
+        if isinstance(cache_new, int) and cache_new > 0:
+            cache_bits.append(f"{_fmt_k(cache_new)} new")
+        if cache_bits:
+            parts.append(f"🗄 {' / '.join(cache_bits)}")
+    cost = usage.get("total_cost_usd")
+    if isinstance(cost, (int, float)) and cost > 0:
+        parts.append(f"${cost:.4f}")
+    turns = usage.get("num_turns")
+    if isinstance(turns, int) and turns > 0:
+        parts.append(f"{turns} turn" if turns == 1 else f"{turns} turns")
+    return " · ".join(parts) if parts else None
+
+
 @dataclass(frozen=True, slots=True)
 class IncomingMessage:
     channel_id: ChannelId
@@ -586,9 +622,15 @@ async def handle_message(
         resume=resume_value,
     )
     sync_resume_token(progress_tracker, completed.resume or outcome.resume)
+    usage_footer = _format_usage_footer(completed.usage)
+    final_context_line = context_line
+    if usage_footer:
+        final_context_line = (
+            f"{context_line}  \n{usage_footer}" if context_line else usage_footer
+        )
     state = progress_tracker.snapshot(
         resume_formatter=runner.format_resume,
-        context_line=context_line,
+        context_line=final_context_line,
     )
     final_rendered = cfg.presenter.render_final(
         state,
