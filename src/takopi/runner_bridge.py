@@ -79,8 +79,23 @@ def _fmt_k(value: int) -> str:
     return f"{value // 1000}k"
 
 
-def _format_usage_footer(usage: dict[str, object] | None) -> str | None:
-    if not usage:
+def _fmt_duration_ms(value: int) -> str:
+    seconds = max(0, round(value / 1000))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds}s" if seconds else f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m"
+
+
+def _format_usage_footer(
+    usage: dict[str, object] | None,
+    *,
+    engine: str,
+) -> str | None:
+    if not usage or engine != "claude":
         return None
     parts: list[str] = []
     raw_usage = usage.get("usage")
@@ -104,6 +119,9 @@ def _format_usage_footer(usage: dict[str, object] | None) -> str | None:
     turns = usage.get("num_turns")
     if isinstance(turns, int) and turns > 0:
         parts.append(f"{turns} turn" if turns == 1 else f"{turns} turns")
+    duration_ms = usage.get("duration_ms")
+    if isinstance(duration_ms, int) and duration_ms > 0:
+        parts.append(f"⏱ {_fmt_duration_ms(duration_ms)}")
     return " · ".join(parts) if parts else None
 
 
@@ -622,7 +640,7 @@ async def handle_message(
         resume=resume_value,
     )
     sync_resume_token(progress_tracker, completed.resume or outcome.resume)
-    usage_footer = _format_usage_footer(completed.usage)
+    usage_footer = _format_usage_footer(completed.usage, engine=runner.engine)
     final_context_line = context_line
     if usage_footer:
         final_context_line = (
