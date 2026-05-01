@@ -419,6 +419,8 @@ class TelegramLoopState:
     running_tasks: RunningTasks
     pending_prompts: dict[ForwardKey, _PendingPrompt]
     media_groups: dict[tuple[int, str], _MediaGroupState]
+    recent_messages: dict[MessageKey, TelegramIncomingMessage]
+    recent_media_groups: dict[tuple[int, str], list[TelegramIncomingMessage]]
     command_ids: set[str]
     reserved_commands: set[str]
     reserved_chat_commands: set[str]
@@ -957,6 +959,8 @@ async def run_main_loop(
         running_tasks={},
         pending_prompts={},
         media_groups={},
+        recent_messages={},
+        recent_media_groups={},
         command_ids={
             command_id.lower()
             for command_id in list_command_ids(allowlist=cfg.runtime.allowlist)
@@ -1440,21 +1444,53 @@ async def run_main_loop(
                 except DirectiveError as exc:
                     await reply(text=f"error:\n{exc}")
                     return
-                if msg.reply_to_document is not None and not resolved.attachments:
-                    staged_reply = await stage_file_put(
-                        cfg,
-                        msg,
-                        use_reply_document=True,
+                if msg.reply_to_message_id is not None and not resolved.attachments:
+                    replied_msg = state.recent_messages.get(
+                        (msg.chat_id, msg.reply_to_message_id)
                     )
-                    if staged_reply is not None:
-                        resolved = ResolvedMessage(
-                            prompt=resolved.prompt,
-                            resume_token=resolved.resume_token,
-                            engine_override=resolved.engine_override,
-                            context=resolved.context,
-                            context_source=resolved.context_source,
-                            attachments=(staged_reply.attachment,),
+                    if (
+                        replied_msg is not None
+                        and replied_msg.media_group_id is not None
+                    ):
+                        album = state.recent_media_groups.get(
+                            (msg.chat_id, replied_msg.media_group_id),
+                            [],
                         )
+                        if album:
+                            from .commands.file_transfer import _stage_reply_file_put_group
+
+                            staged_group = await _stage_reply_file_put_group(
+                                cfg,
+                                msg,
+                                album,
+                            )
+                            if staged_group is not None and staged_group.staged:
+                                resolved = ResolvedMessage(
+                                    prompt=resolved.prompt,
+                                    resume_token=resolved.resume_token,
+                                    engine_override=resolved.engine_override,
+                                    context=resolved.context,
+                                    context_source=resolved.context_source,
+                                    attachments=tuple(
+                                        item.attachment
+                                        for item in staged_group.staged
+                                    ),
+                                )
+                    if msg.reply_to_document is not None and not resolved.attachments:
+                        staged_reply = await stage_file_put(
+                            cfg,
+                            msg,
+                            use_reply_document=True,
+                        )
+                        if staged_reply is not None:
+                            resolved = ResolvedMessage(
+                                prompt=resolved.prompt,
+                                resume_token=resolved.resume_token,
+                                engine_override=resolved.engine_override,
+                                context=resolved.context,
+                                context_source=resolved.context_source,
+                                attachments=(staged_reply.attachment,),
+                            )
                 if pending.is_voice_transcribed:
                     resolved = ResolvedMessage(
                         prompt=f"(voice transcribed) {resolved.prompt}",
@@ -1864,9 +1900,24 @@ async def run_main_loop(
                         return
                     state.seen_message_keys.add(key)
                     state.seen_messages_order.append(key)
+                    state.recent_messages[key] = update
+                    if update.media_group_id is not None:
+                        media_key = (update.chat_id, update.media_group_id)
+                        bucket = state.recent_media_groups.setdefault(media_key, [])
+                        bucket.append(update)
                     if len(state.seen_messages_order) > _SEEN_MESSAGES_LIMIT:
                         oldest = state.seen_messages_order.popleft()
                         state.seen_message_keys.discard(oldest)
+                        old_msg = state.recent_messages.pop(oldest, None)
+                        if old_msg is not None and old_msg.media_group_id is not None:
+                            media_key = (old_msg.chat_id, old_msg.media_group_id)
+                            bucket = state.recent_media_groups.get(media_key)
+                            if bucket is not None:
+                                bucket = [item for item in bucket if item.message_id != old_msg.message_id]
+                                if bucket:
+                                    state.recent_media_groups[media_key] = bucket
+                                else:
+                                    state.recent_media_groups.pop(media_key, None)
                 if isinstance(update, TelegramCallbackQuery):
                     if update.data == CANCEL_CALLBACK_DATA:
                         tg.start_soon(

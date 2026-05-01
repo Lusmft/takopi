@@ -580,6 +580,36 @@ async def _stage_file_put_group(
     return _StagedFilePutGroup(staged=staged, failed=failed)
 
 
+async def _stage_reply_file_put_group(
+    cfg: TelegramBridgeConfig,
+    msg: TelegramIncomingMessage,
+    messages: Sequence[TelegramIncomingMessage],
+) -> _StagedFilePutGroup | None:
+    reply = make_reply(cfg, msg)
+    documents = [item.document for item in messages if item.document is not None]
+    if not documents:
+        await reply(text=FILE_PUT_USAGE)
+        return None
+    staged: list[_StagedFilePut] = []
+    failed: list[_FilePutResult] = []
+    for index, item in enumerate(messages):
+        document = item.document
+        if document is None:
+            continue
+        result = await _stage_document_payload(
+            cfg,
+            document=document,
+            chat_id=msg.chat_id,
+            message_id=msg.message_id + index,
+        )
+        if result.error is None and result.rel_path is not None and result.size is not None:
+            attachment = _prompt_attachment_for_document(document, path=result.rel_path)
+            staged.append(_StagedFilePut(path=result.rel_path, size=result.size, attachment=attachment))
+        else:
+            failed.append(result)
+    return _StagedFilePutGroup(staged=staged, failed=failed)
+
+
 async def _save_file_put_group(
     cfg: TelegramBridgeConfig,
     msg: TelegramIncomingMessage,
