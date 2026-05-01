@@ -1711,6 +1711,17 @@ async def run_main_loop(
                             )
                         )
                         return
+                if command_id == "file":
+                    logger.info(
+                        "file.reply_probe",
+                        chat_id=msg.chat_id,
+                        message_id=msg.message_id,
+                        reply_to_message_id=msg.reply_to_message_id,
+                        has_document=msg.document is not None,
+                        has_reply_document=msg.reply_to_document is not None,
+                        media_group_id=msg.media_group_id,
+                        args_text=args_text,
+                    )
                 if command_id == "file" and msg.reply_to_document is not None:
                     staged_reply = await stage_file_put(
                         cfg,
