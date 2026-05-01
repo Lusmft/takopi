@@ -1887,7 +1887,7 @@ async def run_main_loop(
                     if len(state.seen_update_order) > _SEEN_UPDATES_LIMIT:
                         oldest_update_id = state.seen_update_order.popleft()
                         state.seen_update_ids.discard(oldest_update_id)
-                elif isinstance(update, TelegramIncomingMessage):
+                if isinstance(update, TelegramIncomingMessage):
                     key = (update.chat_id, update.message_id)
                     if key in state.seen_message_keys:
                         logger.debug(
