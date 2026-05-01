@@ -196,6 +196,7 @@ def test_parse_incoming_update_photo_message() -> None:
     assert msg.document is not None
     assert msg.document.file_id == "large"
     assert msg.document.file_name is None
+    assert msg.document.mime_type == "image/jpeg"
     assert msg.document.file_size == 1000
 
 

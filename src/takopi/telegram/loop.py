@@ -1901,6 +1901,24 @@ async def run_main_loop(
                     state.seen_message_keys.add(key)
                     state.seen_messages_order.append(key)
                     state.recent_messages[key] = update
+                    if update.reply_to_message_id is not None:
+                        reply_document = update.reply_to_document
+                        if reply_document is not None:
+                            state.recent_messages.setdefault(
+                                (update.chat_id, update.reply_to_message_id),
+                                TelegramIncomingMessage(
+                                    transport=update.transport,
+                                    chat_id=update.chat_id,
+                                    message_id=update.reply_to_message_id,
+                                    text=update.reply_to_text or "",
+                                    reply_to_message_id=None,
+                                    reply_to_text=None,
+                                    sender_id=None,
+                                    chat_type=update.chat_type,
+                                    is_forum=update.is_forum,
+                                    document=reply_document,
+                                ),
+                            )
                     if update.media_group_id is not None:
                         media_key = (update.chat_id, update.media_group_id)
                         bucket = state.recent_media_groups.setdefault(media_key, [])

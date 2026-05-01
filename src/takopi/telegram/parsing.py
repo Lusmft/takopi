@@ -211,7 +211,7 @@ def _document_from_photo(photo: PhotoSize) -> TelegramDocument:
     return TelegramDocument(
         file_id=photo.file_id,
         file_name=None,
-        mime_type=None,
+        mime_type="image/jpeg",
         file_size=photo.file_size,
         raw=msgspec.to_builtins(photo),
     )
