@@ -1796,7 +1796,11 @@ async def run_main_loop(
                 if msg.document is not None:
                     if cfg.files.enabled and cfg.files.auto_put:
                         caption_text = text.strip()
-                        if cfg.files.auto_put_mode == "prompt" and caption_text:
+                        is_image_upload = (
+                            msg.document.mime_type is not None
+                            and msg.document.mime_type.startswith("image/")
+                        )
+                        if caption_text and (cfg.files.auto_put_mode == "prompt" or is_image_upload):
                             tg.start_soon(
                                 handle_prompt_upload,
                                 msg,
