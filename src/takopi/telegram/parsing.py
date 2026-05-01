@@ -114,6 +114,8 @@ def _parse_incoming_message(
         best_reply_photo = _best_photo(reply.photo)
         if best_reply_photo is not None:
             reply_to_document = _document_from_photo(best_reply_photo)
+    if reply_to_document is None and reply is not None and file_command and reply.sticker is not None:
+        reply_to_document = _document_from_sticker(reply.sticker)
     reply_to_is_bot = (
         reply.from_.is_bot if reply is not None and reply.from_ is not None else None
     )

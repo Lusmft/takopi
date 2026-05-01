@@ -1711,6 +1711,31 @@ async def run_main_loop(
                             )
                         )
                         return
+                if command_id == "file" and msg.reply_to_document is not None:
+                    staged_reply = await stage_file_put(
+                        cfg,
+                        msg,
+                        use_reply_document=True,
+                    )
+                    if staged_reply is not None:
+                        text = args_text.strip()
+                        if text.startswith("put"):
+                            text = text[3:].strip()
+                        if not text:
+                            text = "Describe this image."
+                        await run_prompt_from_upload(
+                            msg,
+                            _build_attachment_prompt(text, [staged_reply.attachment]),
+                            ResolvedMessage(
+                                prompt=text,
+                                resume_token=None,
+                                engine_override=None,
+                                context=ambient_context,
+                                context_source="ambient",
+                                attachments=(staged_reply.attachment,),
+                            ),
+                        )
+                    return
                 if command_id is not None and _dispatch_builtin_command(
                     ctx=TelegramCommandContext(
                         cfg=cfg,
