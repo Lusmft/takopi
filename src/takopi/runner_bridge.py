@@ -642,6 +642,16 @@ async def handle_message(
         action_count=progress_tracker.action_count,
         resume=resume_value,
     )
+    if after_completed is not None:
+        try:
+            await after_completed(incoming, progress_tracker, cwd)
+        except Exception as exc:
+            logger.warning(
+                "handle.after_completed.failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+
     sync_resume_token(progress_tracker, completed.resume or outcome.resume)
     usage_footer = _format_usage_footer(completed.usage, engine=runner.engine)
     final_context_line = context_line
@@ -664,16 +674,6 @@ async def handle_message(
         rendered=final_rendered.text,
         status=status,
     )
-
-    if after_completed is not None:
-        try:
-            await after_completed(incoming, progress_tracker, cwd)
-        except Exception as exc:
-            logger.warning(
-                "handle.after_completed.failed",
-                error=str(exc),
-                error_type=type(exc).__name__,
-            )
 
     can_edit_final = progress_ref is not None
     edit_ref = None if cfg.final_notify or not can_edit_final else progress_ref
