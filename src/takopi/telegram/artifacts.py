@@ -100,15 +100,19 @@ def collect_image_artifacts(
     # action parsing, and covers the common path where Claude creates
     # ./artifacts/*.png then only mentions the path in the final answer.
     candidates.extend(_iter_recent_image_files(cwd, since=since))
-    try:
-        file_change_paths = _iter_file_change_paths(tracker)
-    except Exception as exc:
-        logger.warning(
-            "telegram.artifacts.tracker_scan_failed",
-            error=str(exc),
-            error_type=type(exc).__name__,
-        )
-        file_change_paths = []
+    file_change_paths: list[str] = []
+    # For explicit image/screenshot requests the caller passes since=None.
+    # In that hot path, avoid tracker/action parsing entirely: it is runner-specific
+    # and can block delivery even when the artifact already exists on disk.
+    if since is not None:
+        try:
+            file_change_paths = _iter_file_change_paths(tracker)
+        except Exception as exc:
+            logger.warning(
+                "telegram.artifacts.tracker_scan_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
     for raw_path in file_change_paths:
         path = _resolve_artifact_path(raw_path, cwd=cwd)
         if path is not None:
