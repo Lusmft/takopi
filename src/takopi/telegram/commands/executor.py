@@ -191,6 +191,7 @@ async def _run_engine(
     show_resume_line: bool = True,
     progress_ref: MessageRef | None = None,
     run_options: EngineRunOptions | None = None,
+    telegram_cfg: "TelegramBridgeConfig | None" = None,
 ) -> None:
     reply = partial(
         send_plain,
@@ -260,8 +261,10 @@ async def _run_engine(
                 tracker: ProgressTracker,
                 completed_cwd: Path | None,
             ) -> None:
+                if telegram_cfg is None:
+                    return
                 await send_image_artifacts(
-                    cfg,
+                    telegram_cfg,
                     incoming=completed_incoming,
                     tracker=tracker,
                     cwd=completed_cwd,
@@ -473,6 +476,7 @@ class _TelegramCommandExecutor(CommandExecutor):
             thread_id=self._thread_id,
             show_resume_line=effective_show_resume_line,
             run_options=run_options,
+            telegram_cfg=self._cfg,
         )
         return RunResult(engine=engine, message=None)
 
