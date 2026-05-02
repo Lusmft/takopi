@@ -370,7 +370,9 @@ class _TelegramCommandExecutor(CommandExecutor):
         show_resume_line: bool,
         stateful_mode: bool,
         default_engine_override: EngineId | None,
+        cfg: object,
     ) -> None:
+        self._cfg = cfg
         self._exec_cfg = exec_cfg
         self._runtime = runtime
         self._running_tasks = running_tasks

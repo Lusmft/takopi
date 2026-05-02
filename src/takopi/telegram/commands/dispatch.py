@@ -62,6 +62,7 @@ async def _dispatch_command(
         show_resume_line=cfg.show_resume_line,
         stateful_mode=stateful_mode,
         default_engine_override=default_engine_override,
+        cfg=cfg,
     )
     message_ref = MessageRef(
         channel_id=chat_id,
