@@ -1203,6 +1203,7 @@ async def run_main_loop(
                     show_resume_line=show_resume_line,
                     progress_ref=progress_ref,
                     run_options=run_options,
+                    telegram_cfg=cfg,
                 )
 
             async def run_thread_job(job: ThreadJob) -> None:
