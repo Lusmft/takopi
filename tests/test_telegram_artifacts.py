@@ -73,7 +73,7 @@ def test_collect_image_artifacts_from_recent_artifacts_dir(tmp_path: Path) -> No
 
 
 @pytest.mark.anyio
-async def test_send_image_artifacts_sends_document(tmp_path: Path) -> None:
+async def test_send_image_artifacts_sends_photo_for_png(tmp_path: Path) -> None:
     image = tmp_path / "cat.png"
     image.write_bytes(b"png")
     tracker = _tracker_with_file_change("cat.png")
@@ -95,6 +95,9 @@ async def test_send_image_artifacts_sends_document(tmp_path: Path) -> None:
     count = await send_image_artifacts(cfg, incoming=incoming, tracker=tracker, cwd=tmp_path)
 
     assert count == 1
-    assert bot.document_calls[0]["filename"] == "cat.png"
-    assert bot.document_calls[0]["content"] == b"png"
-    assert bot.document_calls[0]["reply_to_message_id"] == 10
+    assert bot.photo_calls[0]["filename"] == "cat.png"
+    assert bot.photo_calls[0]["content"] == b"png"
+    assert bot.photo_calls[0]["reply_to_message_id"] == 10
+    assert bot.photo_calls[0]["caption"] == "cat.png"
+    assert bot.photo_calls[0]["wait"] is False
+    assert bot.document_calls == []

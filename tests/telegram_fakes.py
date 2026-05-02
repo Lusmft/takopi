@@ -94,6 +94,7 @@ class FakeBot(BotClient):
         self.document_calls: list[dict] = []
         self.edit_calls: list[dict] = []
         self.edit_topic_calls: list[dict[str, Any]] = []
+        self.photo_calls: list[dict[str, Any]] = []
         self.delete_calls: list[dict] = []
 
     async def get_updates(
@@ -168,6 +169,32 @@ class FakeBot(BotClient):
             }
         )
         return Message(message_id=2, chat=Chat(id=chat_id, type="private"))
+
+    async def send_photo(
+        self,
+        chat_id: int,
+        filename: str,
+        content: bytes,
+        reply_to_message_id: int | None = None,
+        message_thread_id: int | None = None,
+        disable_notification: bool | None = False,
+        caption: str | None = None,
+        *,
+        wait: bool = True,
+    ) -> Message:
+        self.photo_calls.append(
+            {
+                "chat_id": chat_id,
+                "filename": filename,
+                "content": content,
+                "reply_to_message_id": reply_to_message_id,
+                "message_thread_id": message_thread_id,
+                "disable_notification": disable_notification,
+                "caption": caption,
+                "wait": wait,
+            }
+        )
+        return Message(message_id=3, chat=Chat(id=chat_id, type="private"))
 
     async def edit_message_text(
         self,

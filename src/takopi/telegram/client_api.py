@@ -74,6 +74,19 @@ class BotClient(Protocol):
         wait: bool = True,
     ) -> Message | None: ...
 
+    async def send_photo(
+        self,
+        chat_id: int,
+        filename: str,
+        content: bytes,
+        reply_to_message_id: int | None = None,
+        message_thread_id: int | None = None,
+        disable_notification: bool | None = False,
+        caption: str | None = None,
+        *,
+        wait: bool = True,
+    ) -> Message | None: ...
+
     async def edit_message_text(
         self,
         chat_id: int,
@@ -425,6 +438,32 @@ class HttpBotClient:
             files={"document": (filename, content)},
         )
         return self._decode_result(method="sendDocument", payload=result, model=Message)
+
+    async def send_photo(
+        self,
+        chat_id: int,
+        filename: str,
+        content: bytes,
+        reply_to_message_id: int | None = None,
+        message_thread_id: int | None = None,
+        disable_notification: bool | None = False,
+        caption: str | None = None,
+    ) -> Message | None:
+        params: dict[str, Any] = {"chat_id": chat_id}
+        if disable_notification is not None:
+            params["disable_notification"] = disable_notification
+        if reply_to_message_id is not None:
+            params["reply_to_message_id"] = reply_to_message_id
+        if message_thread_id is not None:
+            params["message_thread_id"] = message_thread_id
+        if caption is not None:
+            params["caption"] = caption
+        result = await self._post_form(
+            "sendPhoto",
+            params,
+            files={"photo": (filename, content)},
+        )
+        return self._decode_result(method="sendPhoto", payload=result, model=Message)
 
     async def edit_message_text(
         self,

@@ -10,6 +10,7 @@ from .bridge import TelegramBridgeConfig
 logger = get_logger(__name__)
 
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"})
+_PHOTO_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 _MAX_ARTIFACT_BYTES = 20 * 1024 * 1024
 
 
@@ -165,15 +166,20 @@ async def send_image_artifacts(
             content = artifact.path.read_bytes()
         except OSError:
             continue
-        await cfg.bot.send_document(
-            chat_id=int(incoming.channel_id),
-            filename=artifact.path.name,
-            content=content,
-            reply_to_message_id=int(incoming.message_id),
-            message_thread_id=int(incoming.thread_id) if incoming.thread_id is not None else None,
-            caption=f"artifact: {artifact.rel_path}",
-            wait=False,
-        )
+        common_args = {
+            "chat_id": int(incoming.channel_id),
+            "filename": artifact.path.name,
+            "content": content,
+            "reply_to_message_id": int(incoming.message_id),
+            "message_thread_id": int(incoming.thread_id) if incoming.thread_id is not None else None,
+            "caption": artifact.rel_path,
+            "wait": False,
+        }
+        if artifact.path.suffix.lower() in _PHOTO_SUFFIXES and hasattr(cfg.bot, "send_photo"):
+            await cfg.bot.send_photo(**common_args)
+            logger.info("telegram.artifacts.enqueued", path=artifact.rel_path, method="photo")
+        else:
+            await cfg.bot.send_document(**common_args)
+            logger.info("telegram.artifacts.enqueued", path=artifact.rel_path, method="document")
         sent_count += 1
-        logger.info("telegram.artifacts.enqueued", path=artifact.rel_path)
     return sent_count
