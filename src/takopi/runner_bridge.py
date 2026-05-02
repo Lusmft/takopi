@@ -641,8 +641,10 @@ async def handle_message(
         elapsed_s=round(elapsed, 2),
         action_count=progress_tracker.action_count,
         resume=resume_value,
+        after_completed=after_completed is not None,
     )
     if after_completed is not None:
+        logger.info("handle.after_completed.start")
         try:
             await after_completed(incoming, progress_tracker, cwd)
         except Exception as exc:
