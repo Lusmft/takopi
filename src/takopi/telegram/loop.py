@@ -74,7 +74,6 @@ from .types import (
     TelegramIncomingUpdate,
 )
 from .voice import transcribe_voice
-from .image_flow import handle_image_request
 
 logger = get_logger(__name__)
 
@@ -1783,11 +1782,6 @@ async def run_main_loop(
                     if text is None:
                         return
                     is_voice_transcribed = True
-
-                handled_image = await handle_image_request(cfg, msg, text, reply)
-                if handled_image:
-                    return
-
                 if msg.document is not None:
                     if cfg.files.enabled and cfg.files.auto_put:
                         caption_text = text.strip()
