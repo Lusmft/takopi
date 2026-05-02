@@ -5,24 +5,12 @@ import pytest
 from takopi.markdown import MarkdownPresenter
 from takopi.runner_bridge import ExecBridgeConfig
 from takopi.runners.mock import Return, ScriptRunner
-from takopi.settings import TelegramImagesSettings
 from takopi.telegram.bridge import TelegramBridgeConfig
-from takopi.telegram.image_backend import ImageResult
 from takopi.telegram.image_flow import handle_image_request
 from takopi.telegram.image_intent import build_basic_image_prompt, is_image_intent
 from takopi.telegram.types import TelegramIncomingMessage
 from takopi.transport_runtime import TransportRuntime
 from tests.telegram_fakes import FakeBot, FakeTransport, _empty_projects, _make_router
-
-
-class _FakeImageGenerator:
-    async def generate(self, *, prompt: str, settings: TelegramImagesSettings) -> ImageResult:
-        return ImageResult(
-            filename="custom.png",
-            content=f"PNG:{prompt}:{settings.size}".encode(),
-            mime_type="image/png",
-            caption="done",
-        )
 
 
 class _ReplyRecorder:
@@ -33,7 +21,7 @@ class _ReplyRecorder:
         self.calls.append(kwargs)
 
 
-def _make_cfg(bot: FakeBot, *, images: TelegramImagesSettings | None = None) -> TelegramBridgeConfig:
+def _make_cfg(bot: FakeBot) -> TelegramBridgeConfig:
     runner = ScriptRunner([Return(answer="ok")], engine="codex")
     return TelegramBridgeConfig(
         bot=bot,
@@ -45,7 +33,6 @@ def _make_cfg(bot: FakeBot, *, images: TelegramImagesSettings | None = None) -> 
             presenter=MarkdownPresenter(),
             final_notify=True,
         ),
-        images=images or TelegramImagesSettings(provider="stub"),
     )
 
 
@@ -77,13 +64,7 @@ async def test_handle_image_request_sends_document() -> None:
     )
     reply = _ReplyRecorder()
 
-    handled = await handle_image_request(
-        cfg,
-        msg,
-        msg.text,
-        reply,
-        generator=_FakeImageGenerator(),
-    )
+    handled = await handle_image_request(cfg, msg, msg.text, reply)
 
     assert handled is True
     assert reply.calls == []
@@ -91,9 +72,8 @@ async def test_handle_image_request_sends_document() -> None:
     call = bot.document_calls[0]
     assert call["chat_id"] == 123
     assert call["reply_to_message_id"] == 10
-    assert call["filename"] == "custom.png"
-    assert call["content"] == "PNG:неоновый баннер:1024x1024".encode()
-    assert call["caption"] == "done"
+    assert call["filename"] == "takopi-image-request.svg"
+    assert call["content"].startswith(b"<svg")
 
 
 @pytest.mark.anyio
@@ -105,28 +85,6 @@ async def test_handle_image_request_ignores_normal_text() -> None:
         chat_id=123,
         message_id=10,
         text="объясни traceback",
-        reply_to_message_id=None,
-        reply_to_text=None,
-        sender_id=99,
-    )
-    reply = _ReplyRecorder()
-
-    handled = await handle_image_request(cfg, msg, msg.text, reply)
-
-    assert handled is False
-    assert bot.document_calls == []
-    assert reply.calls == []
-
-
-@pytest.mark.anyio
-async def test_handle_image_request_ignores_when_disabled() -> None:
-    bot = FakeBot()
-    cfg = _make_cfg(bot, images=TelegramImagesSettings(enabled=False))
-    msg = TelegramIncomingMessage(
-        transport="telegram",
-        chat_id=123,
-        message_id=10,
-        text="нарисуй кота",
         reply_to_message_id=None,
         reply_to_text=None,
         sender_id=99,

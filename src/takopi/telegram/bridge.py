@@ -15,7 +15,6 @@ from ..model import ResumeToken
 from ..scheduler import ThreadScheduler
 from ..settings import (
     TelegramFilesSettings,
-    TelegramImagesSettings,
     TelegramTopicsSettings,
     TelegramTransportSettings,
 )
@@ -131,7 +130,6 @@ class TelegramBridgeConfig:
     media_group_debounce_s: float = 1.0
     allowed_user_ids: tuple[int, ...] = ()
     files: TelegramFilesSettings = field(default_factory=TelegramFilesSettings)
-    images: TelegramImagesSettings = field(default_factory=TelegramImagesSettings)
     chat_ids: tuple[int, ...] | None = None
     topics: TelegramTopicsSettings = field(default_factory=TelegramTopicsSettings)
 
