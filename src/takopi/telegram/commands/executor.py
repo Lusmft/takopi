@@ -250,11 +250,6 @@ async def _run_engine(
             if cwd is not None:
                 run_fields["cwd"] = str(cwd)
             bind_run_context(**run_fields)
-            logger.info(
-                "telegram.artifacts.config",
-                telegram_cfg_present=telegram_cfg is not None,
-                telegram_cfg_type=type(telegram_cfg).__name__,
-            )
             context_line = runtime.format_context_line(context)
             is_image_request = _is_image_request(text)
             started_wall_time = time.time()
@@ -461,12 +456,6 @@ class _TelegramCommandExecutor(CommandExecutor):
             self._scheduler.note_thread_known
             if self._on_thread_known is None
             else self._on_thread_known
-        )
-        logger.info(
-            "telegram.executor.run_one",
-            mode=mode,
-            self_cfg_present=getattr(self, "_cfg", None) is not None,
-            self_cfg_type=type(getattr(self, "_cfg", None)).__name__,
         )
         if mode == "capture":
             capture = _CaptureTransport()

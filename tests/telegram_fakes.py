@@ -95,6 +95,7 @@ class FakeBot(BotClient):
         self.edit_calls: list[dict] = []
         self.edit_topic_calls: list[dict[str, Any]] = []
         self.photo_calls: list[dict[str, Any]] = []
+        self.media_group_calls: list[dict[str, Any]] = []
         self.delete_calls: list[dict] = []
 
     async def get_updates(
@@ -195,6 +196,30 @@ class FakeBot(BotClient):
             }
         )
         return Message(message_id=3, chat=Chat(id=chat_id, type="private"))
+
+    async def send_media_group(
+        self,
+        chat_id: int,
+        media: list[dict[str, Any]],
+        files: dict[str, tuple[str, bytes]],
+        reply_to_message_id: int | None = None,
+        message_thread_id: int | None = None,
+        disable_notification: bool | None = False,
+        *,
+        wait: bool = True,
+    ) -> list[Message]:
+        self.media_group_calls.append(
+            {
+                "chat_id": chat_id,
+                "media": media,
+                "files": files,
+                "reply_to_message_id": reply_to_message_id,
+                "message_thread_id": message_thread_id,
+                "disable_notification": disable_notification,
+                "wait": wait,
+            }
+        )
+        return [Message(message_id=4, chat=Chat(id=chat_id, type="private"))]
 
     async def edit_message_text(
         self,

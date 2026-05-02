@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Protocol, TypeVar
 
 import httpx
@@ -86,6 +87,18 @@ class BotClient(Protocol):
         *,
         wait: bool = True,
     ) -> Message | None: ...
+
+    async def send_media_group(
+        self,
+        chat_id: int,
+        media: list[dict[str, Any]],
+        files: dict[str, tuple[str, bytes]],
+        reply_to_message_id: int | None = None,
+        message_thread_id: int | None = None,
+        disable_notification: bool | None = False,
+        *,
+        wait: bool = True,
+    ) -> list[Message] | None: ...
 
     async def edit_message_text(
         self,
@@ -464,6 +477,36 @@ class HttpBotClient:
             files={"photo": (filename, content)},
         )
         return self._decode_result(method="sendPhoto", payload=result, model=Message)
+
+    async def send_media_group(
+        self,
+        chat_id: int,
+        media: list[dict[str, Any]],
+        files: dict[str, tuple[str, bytes]],
+        reply_to_message_id: int | None = None,
+        message_thread_id: int | None = None,
+        disable_notification: bool | None = False,
+    ) -> list[Message] | None:
+        params: dict[str, Any] = {"chat_id": chat_id, "media": json.dumps(media)}
+        if disable_notification is not None:
+            params["disable_notification"] = disable_notification
+        if reply_to_message_id is not None:
+            params["reply_to_message_id"] = reply_to_message_id
+        if message_thread_id is not None:
+            params["message_thread_id"] = message_thread_id
+        result = await self._post_form("sendMediaGroup", params, files=files)
+        if result is None:
+            return None
+        try:
+            return msgspec.convert(result, type=list[Message])
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "telegram.decode_error",
+                method="sendMediaGroup",
+                error=str(exc),
+                error_type=exc.__class__.__name__,
+            )
+            return None
 
     async def edit_message_text(
         self,

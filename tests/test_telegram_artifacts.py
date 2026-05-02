@@ -101,3 +101,38 @@ async def test_send_image_artifacts_sends_photo_for_png(tmp_path: Path) -> None:
     assert bot.photo_calls[0]["caption"] == "cat.png"
     assert bot.photo_calls[0]["wait"] is False
     assert bot.document_calls == []
+
+
+@pytest.mark.anyio
+async def test_send_image_artifacts_sends_photo_album_for_multiple_pngs(tmp_path: Path) -> None:
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    first = artifacts_dir / "one.png"
+    second = artifacts_dir / "two.jpg"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    tracker = ProgressTracker(engine="claude")
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine="claude")
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=TransportRuntime(router=_make_router(runner), projects=_empty_projects()),
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=FakeTransport(),
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+    )
+    incoming = IncomingMessage(channel_id=123, message_id=10, text="make images")
+
+    count = await send_image_artifacts(cfg, incoming=incoming, tracker=tracker, cwd=tmp_path, since=None)
+
+    assert count == 2
+    assert bot.media_group_calls[0]["reply_to_message_id"] == 10
+    assert bot.media_group_calls[0]["wait"] is False
+    assert [item["type"] for item in bot.media_group_calls[0]["media"]] == ["photo", "photo"]
+    assert set(bot.media_group_calls[0]["files"]) == {"photo0", "photo1"}
+    assert bot.photo_calls == []
+    assert bot.document_calls == []

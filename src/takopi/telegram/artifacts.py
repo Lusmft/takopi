@@ -160,26 +160,67 @@ async def send_image_artifacts(
         count=len(artifacts),
         paths=[artifact.rel_path for artifact in artifacts],
     )
-    sent_count = 0
+    photo_items: list[tuple[TelegramArtifact, bytes]] = []
+    document_items: list[tuple[TelegramArtifact, bytes]] = []
     for artifact in artifacts:
         try:
             content = artifact.path.read_bytes()
         except OSError:
             continue
-        common_args = {
-            "chat_id": int(incoming.channel_id),
-            "filename": artifact.path.name,
-            "content": content,
-            "reply_to_message_id": int(incoming.message_id),
-            "message_thread_id": int(incoming.thread_id) if incoming.thread_id is not None else None,
-            "caption": artifact.rel_path,
-            "wait": False,
-        }
         if artifact.path.suffix.lower() in _PHOTO_SUFFIXES and hasattr(cfg.bot, "send_photo"):
-            await cfg.bot.send_photo(**common_args)
-            logger.info("telegram.artifacts.enqueued", path=artifact.rel_path, method="photo")
+            photo_items.append((artifact, content))
         else:
-            await cfg.bot.send_document(**common_args)
-            logger.info("telegram.artifacts.enqueued", path=artifact.rel_path, method="document")
+            document_items.append((artifact, content))
+
+    sent_count = 0
+    if len(photo_items) >= 2 and hasattr(cfg.bot, "send_media_group"):
+        media: list[dict[str, str]] = []
+        files: dict[str, tuple[str, bytes]] = {}
+        for index, (artifact, content) in enumerate(photo_items):
+            attachment_name = f"photo{index}"
+            item: dict[str, str] = {"type": "photo", "media": f"attach://{attachment_name}"}
+            if index == 0:
+                item["caption"] = f"{len(photo_items)} images"
+            media.append(item)
+            files[attachment_name] = (artifact.path.name, content)
+        await cfg.bot.send_media_group(
+            chat_id=int(incoming.channel_id),
+            media=media,
+            files=files,
+            reply_to_message_id=int(incoming.message_id),
+            message_thread_id=int(incoming.thread_id) if incoming.thread_id is not None else None,
+            wait=False,
+        )
+        sent_count += len(photo_items)
+        logger.info(
+            "telegram.artifacts.enqueued",
+            paths=[artifact.rel_path for artifact, _ in photo_items],
+            method="media_group",
+        )
+    else:
+        for artifact, content in photo_items:
+            await cfg.bot.send_photo(
+                chat_id=int(incoming.channel_id),
+                filename=artifact.path.name,
+                content=content,
+                reply_to_message_id=int(incoming.message_id),
+                message_thread_id=int(incoming.thread_id) if incoming.thread_id is not None else None,
+                caption=artifact.rel_path,
+                wait=False,
+            )
+            sent_count += 1
+            logger.info("telegram.artifacts.enqueued", path=artifact.rel_path, method="photo")
+
+    for artifact, content in document_items:
+        await cfg.bot.send_document(
+            chat_id=int(incoming.channel_id),
+            filename=artifact.path.name,
+            content=content,
+            reply_to_message_id=int(incoming.message_id),
+            message_thread_id=int(incoming.thread_id) if incoming.thread_id is not None else None,
+            caption=artifact.rel_path,
+            wait=False,
+        )
         sent_count += 1
+        logger.info("telegram.artifacts.enqueued", path=artifact.rel_path, method="document")
     return sent_count

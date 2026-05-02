@@ -271,6 +271,36 @@ class TelegramClient:
             wait=wait,
         )
 
+    async def send_media_group(
+        self,
+        chat_id: int,
+        media: list[dict[str, Any]],
+        files: dict[str, tuple[str, bytes]],
+        reply_to_message_id: int | None = None,
+        message_thread_id: int | None = None,
+        disable_notification: bool | None = False,
+        *,
+        wait: bool = True,
+    ) -> list[Message] | None:
+        async def execute() -> list[Message] | None:
+            return await self._client.send_media_group(
+                chat_id=chat_id,
+                media=media,
+                files=files,
+                reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
+                disable_notification=disable_notification,
+            )
+
+        return await self.enqueue_op(
+            key=self.unique_key("send_media_group"),
+            label="send_media_group",
+            execute=execute,
+            priority=SEND_PRIORITY,
+            chat_id=chat_id,
+            wait=wait,
+        )
+
     async def edit_message_text(
         self,
         chat_id: int,
