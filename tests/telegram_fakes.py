@@ -152,6 +152,8 @@ class FakeBot(BotClient):
         message_thread_id: int | None = None,
         disable_notification: bool | None = False,
         caption: str | None = None,
+        *,
+        wait: bool = True,
     ) -> Message:
         self.document_calls.append(
             {
@@ -162,6 +164,7 @@ class FakeBot(BotClient):
                 "message_thread_id": message_thread_id,
                 "disable_notification": disable_notification,
                 "caption": caption,
+                "wait": wait,
             }
         )
         return Message(message_id=2, chat=Chat(id=chat_id, type="private"))

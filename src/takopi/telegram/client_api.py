@@ -70,6 +70,8 @@ class BotClient(Protocol):
         message_thread_id: int | None = None,
         disable_notification: bool | None = False,
         caption: str | None = None,
+        *,
+        wait: bool = True,
     ) -> Message | None: ...
 
     async def edit_message_text(

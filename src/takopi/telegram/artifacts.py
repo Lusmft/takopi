@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-
 from ..logging import get_logger
 from ..progress import ProgressTracker
 from ..runner_bridge import IncomingMessage
@@ -148,6 +147,11 @@ async def send_image_artifacts(
     cwd: Path | None,
     since: float | None = None,
 ) -> int:
+    logger.info(
+        "telegram.artifacts.collect.start",
+        cwd=str(cwd) if cwd is not None else None,
+        since=since,
+    )
     artifacts = collect_image_artifacts(tracker=tracker, cwd=cwd, since=since)
     logger.info(
         "telegram.artifacts.collect",
@@ -161,17 +165,15 @@ async def send_image_artifacts(
             content = artifact.path.read_bytes()
         except OSError:
             continue
-        sent = await cfg.bot.send_document(
+        await cfg.bot.send_document(
             chat_id=int(incoming.channel_id),
             filename=artifact.path.name,
             content=content,
             reply_to_message_id=int(incoming.message_id),
             message_thread_id=int(incoming.thread_id) if incoming.thread_id is not None else None,
             caption=f"artifact: {artifact.rel_path}",
+            wait=False,
         )
-        if sent is not None:
-            sent_count += 1
-            logger.info("telegram.artifacts.sent", path=artifact.rel_path)
-        else:
-            logger.warning("telegram.artifacts.send_none", path=artifact.rel_path)
+        sent_count += 1
+        logger.info("telegram.artifacts.enqueued", path=artifact.rel_path)
     return sent_count

@@ -216,6 +216,8 @@ class TelegramClient:
         message_thread_id: int | None = None,
         disable_notification: bool | None = False,
         caption: str | None = None,
+        *,
+        wait: bool = True,
     ) -> Message | None:
         async def execute() -> Message | None:
             return await self._client.send_document(
@@ -234,6 +236,7 @@ class TelegramClient:
             execute=execute,
             priority=SEND_PRIORITY,
             chat_id=chat_id,
+            wait=wait,
         )
 
     async def edit_message_text(
