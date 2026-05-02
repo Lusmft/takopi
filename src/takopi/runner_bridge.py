@@ -665,6 +665,16 @@ async def handle_message(
         status=status,
     )
 
+    if after_completed is not None:
+        try:
+            await after_completed(incoming, progress_tracker, cwd)
+        except Exception as exc:
+            logger.warning(
+                "handle.after_completed.failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+
     can_edit_final = progress_ref is not None
     edit_ref = None if cfg.final_notify or not can_edit_final else progress_ref
 
@@ -680,5 +690,3 @@ async def handle_message(
         delete_tag="final",
         thread_id=incoming.thread_id,
     )
-    if after_completed is not None:
-        await after_completed(incoming, progress_tracker, cwd)

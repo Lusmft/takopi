@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..logging import get_logger
 from ..progress import ProgressTracker
 from ..runner_bridge import IncomingMessage
 from .bridge import TelegramBridgeConfig
+
+logger = get_logger(__name__)
 
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"})
 _MAX_ARTIFACT_BYTES = 20 * 1024 * 1024
@@ -130,6 +133,12 @@ async def send_image_artifacts(
     since: float | None = None,
 ) -> int:
     artifacts = collect_image_artifacts(tracker=tracker, cwd=cwd, since=since)
+    logger.info(
+        "telegram.artifacts.collect",
+        cwd=str(cwd) if cwd is not None else None,
+        count=len(artifacts),
+        paths=[artifact.rel_path for artifact in artifacts],
+    )
     sent_count = 0
     for artifact in artifacts:
         try:
@@ -146,4 +155,7 @@ async def send_image_artifacts(
         )
         if sent is not None:
             sent_count += 1
+            logger.info("telegram.artifacts.sent", path=artifact.rel_path)
+        else:
+            logger.warning("telegram.artifacts.send_none", path=artifact.rel_path)
     return sent_count
