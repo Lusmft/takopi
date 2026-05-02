@@ -267,6 +267,7 @@ async def _run_engine(
                 completed_cwd: Path | None,
             ) -> None:
                 if telegram_cfg is None:
+                    logger.info("telegram.artifacts.skipped", reason="missing_telegram_cfg")
                     return
                 sent_count = await send_image_artifacts(
                     telegram_cfg,
@@ -476,6 +477,7 @@ class _TelegramCommandExecutor(CommandExecutor):
                 thread_id=self._thread_id,
                 show_resume_line=effective_show_resume_line,
                 run_options=run_options,
+                telegram_cfg=self._cfg,
             )
             return RunResult(engine=engine, message=capture.last_message)
         await _run_engine(
