@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
+import time
 from typing import cast
 
 import anyio
@@ -115,6 +117,35 @@ def _should_show_resume_line(
     return not stateful_mode
 
 
+_IMAGE_REQUEST_MARKERS = (
+    "скрин",
+    "screenshot",
+    "screen shot",
+    "картинк",
+    "изображен",
+    "picture",
+    "image",
+    "png",
+    "jpg",
+    "jpeg",
+    "webp",
+)
+
+
+_ARTIFACT_DELIVERY_HINT = """
+
+[Telegram artifact delivery]
+If the user asks to see, receive, or send a screenshot/image/file, do not only describe it in text. Create the requested visual artifact as an actual image file inside the current working directory, preferably under ./artifacts/ with a clear .png/.jpg/.webp/.svg filename. After you create the file, mention its relative path briefly. The Telegram transport will upload recently-created image artifacts automatically after your run finishes.
+""".strip()
+
+
+def _with_artifact_delivery_hint(text: str) -> str:
+    lowered = text.lower()
+    if not any(marker in lowered for marker in _IMAGE_REQUEST_MARKERS):
+        return text
+    return f"{text.rstrip()}\n\n{_ARTIFACT_DELIVERY_HINT}"
+
+
 async def _send_runner_unavailable(
     exec_cfg: ExecBridgeConfig,
     *,
@@ -215,13 +246,15 @@ async def _run_engine(
                 run_fields["cwd"] = str(cwd)
             bind_run_context(**run_fields)
             context_line = runtime.format_context_line(context)
+            started_wall_time = time.time()
             incoming = RunnerIncomingMessage(
                 channel_id=chat_id,
                 message_id=user_msg_id,
-                text=text,
+                text=_with_artifact_delivery_hint(text),
                 reply_to=reply_ref,
                 thread_id=thread_id,
             )
+
             async def after_completed(
                 completed_incoming: RunnerIncomingMessage,
                 tracker: ProgressTracker,
@@ -232,6 +265,7 @@ async def _run_engine(
                     incoming=completed_incoming,
                     tracker=tracker,
                     cwd=completed_cwd,
+                    since=started_wall_time,
                 )
 
             with apply_run_options(run_options):

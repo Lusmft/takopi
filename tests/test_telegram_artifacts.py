@@ -54,6 +54,24 @@ def test_collect_image_artifacts_ignores_non_images(tmp_path: Path) -> None:
     assert collect_image_artifacts(tracker=tracker, cwd=tmp_path) == []
 
 
+def test_collect_image_artifacts_from_recent_artifacts_dir(tmp_path: Path) -> None:
+    started_at = 1000.0
+    image = tmp_path / "artifacts" / "dashboard.png"
+    image.parent.mkdir()
+    image.write_bytes(b"png")
+    old = tmp_path / "artifacts" / "old.png"
+    old.write_bytes(b"old")
+    import os
+
+    os.utime(image, (started_at + 1, started_at + 1))
+    os.utime(old, (started_at - 10, started_at - 10))
+    tracker = ProgressTracker(engine="claude")
+
+    artifacts = collect_image_artifacts(tracker=tracker, cwd=tmp_path, since=started_at)
+
+    assert [artifact.rel_path for artifact in artifacts] == ["artifacts/dashboard.png"]
+
+
 @pytest.mark.anyio
 async def test_send_image_artifacts_sends_document(tmp_path: Path) -> None:
     image = tmp_path / "cat.png"
