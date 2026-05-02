@@ -28,7 +28,7 @@ from ...scheduler import ThreadScheduler
 from ...transport import MessageRef, RenderedMessage, SendOptions
 from ...transport_runtime import TransportRuntime
 from ...utils.paths import reset_run_base_dir, set_run_base_dir
-from ..artifacts import send_image_artifacts
+from ..artifacts import collect_image_artifacts, send_image_artifacts
 from ..bridge import send_plain
 from ..engine_overrides import supports_reasoning
 
@@ -139,9 +139,13 @@ If the user asks to see, receive, or send a screenshot/image/file, do not only d
 """.strip()
 
 
-def _with_artifact_delivery_hint(text: str) -> str:
+def _is_image_request(text: str) -> bool:
     lowered = text.lower()
-    if not any(marker in lowered for marker in _IMAGE_REQUEST_MARKERS):
+    return any(marker in lowered for marker in _IMAGE_REQUEST_MARKERS)
+
+
+def _with_artifact_delivery_hint(text: str) -> str:
+    if not _is_image_request(text):
         return text
     return f"{text.rstrip()}\n\n{_ARTIFACT_DELIVERY_HINT}"
 
@@ -247,6 +251,7 @@ async def _run_engine(
                 run_fields["cwd"] = str(cwd)
             bind_run_context(**run_fields)
             context_line = runtime.format_context_line(context)
+            is_image_request = _is_image_request(text)
             started_wall_time = time.time()
             incoming = RunnerIncomingMessage(
                 channel_id=chat_id,
@@ -263,13 +268,25 @@ async def _run_engine(
             ) -> None:
                 if telegram_cfg is None:
                     return
-                await send_image_artifacts(
+                sent_count = await send_image_artifacts(
                     telegram_cfg,
                     incoming=completed_incoming,
                     tracker=tracker,
                     cwd=completed_cwd,
-                    since=started_wall_time,
+                    since=started_wall_time if not is_image_request else None,
                 )
+                if sent_count == 0 and is_image_request:
+                    artifacts = collect_image_artifacts(
+                        tracker=tracker,
+                        cwd=completed_cwd,
+                        since=None,
+                        max_count=1,
+                    )
+                    logger.warning(
+                        "telegram.artifacts.not_sent",
+                        cwd=str(completed_cwd) if completed_cwd is not None else None,
+                        found=[str(artifact.path) for artifact in artifacts],
+                    )
 
             with apply_run_options(run_options):
                 await handle_message(

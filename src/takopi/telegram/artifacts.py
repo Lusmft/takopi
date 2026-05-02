@@ -54,7 +54,7 @@ def _resolve_artifact_path(raw_path: str, *, cwd: Path) -> Path | None:
     return resolved
 
 
-def _iter_recent_image_files(cwd: Path, *, since: float) -> list[Path]:
+def _iter_recent_image_files(cwd: Path, *, since: float | None) -> list[Path]:
     roots = [cwd, cwd / "artifacts"]
     paths: list[Path] = []
     seen: set[Path] = set()
@@ -70,7 +70,7 @@ def _iter_recent_image_files(cwd: Path, *, since: float) -> list[Path]:
                 stat = path.stat()
             except OSError:
                 continue
-            if stat.st_mtime >= since:
+            if since is None or stat.st_mtime >= since:
                 paths.append(path)
     def mtime(path: Path) -> float:
         try:
@@ -97,8 +97,7 @@ def collect_image_artifacts(
         path = _resolve_artifact_path(raw_path, cwd=cwd)
         if path is not None:
             candidates.append(path)
-    if since is not None:
-        candidates.extend(_iter_recent_image_files(cwd, since=since))
+    candidates.extend(_iter_recent_image_files(cwd, since=since))
 
     for path in candidates:
         if path in seen:
