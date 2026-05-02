@@ -99,6 +99,19 @@ class TelegramFilesSettings(BaseModel):
         return value
 
 
+class TelegramImagesSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = True
+    provider: Literal["stub", "openai"] = "stub"
+    model: NonEmptyStr = "gpt-image-1"
+    size: Literal["1024x1024", "1024x1536", "1536x1024", "auto"] = "1024x1024"
+    quality: Literal["low", "medium", "high", "auto"] = "auto"
+    output_format: Literal["png", "jpeg", "webp"] = "png"
+    base_url: NonEmptyStr | None = None
+    api_key: NonEmptyStr | None = None
+
+
 class TelegramTransportSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -117,6 +130,7 @@ class TelegramTransportSettings(BaseModel):
     media_group_debounce_s: float = Field(default=1.0, ge=0)
     topics: TelegramTopicsSettings = Field(default_factory=TelegramTopicsSettings)
     files: TelegramFilesSettings = Field(default_factory=TelegramFilesSettings)
+    images: TelegramImagesSettings = Field(default_factory=TelegramImagesSettings)
 
 
 class TransportsSettings(BaseModel):

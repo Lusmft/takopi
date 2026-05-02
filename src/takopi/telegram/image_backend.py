@@ -1,7 +1,19 @@
 from __future__ import annotations
 
+import base64
 import html
+import os
 from dataclasses import dataclass
+from typing import Literal, Protocol
+
+from openai import AsyncOpenAI, OpenAIError
+
+from ..logging import get_logger
+from ..settings import TelegramImagesSettings
+
+logger = get_logger(__name__)
+
+ImageProvider = Literal["stub", "openai"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -10,6 +22,14 @@ class ImageResult:
     content: bytes
     mime_type: str | None = None
     caption: str | None = None
+
+
+class ImageGenerationError(RuntimeError):
+    pass
+
+
+class ImageGenerator(Protocol):
+    async def generate(self, *, prompt: str, settings: TelegramImagesSettings) -> ImageResult: ...
 
 
 def _svg_placeholder(prompt: str, size: str) -> bytes:
@@ -37,15 +57,93 @@ def _svg_placeholder(prompt: str, size: str) -> bytes:
     return svg.encode("utf-8")
 
 
-async def generate_image(prompt: str, size: str = "1024x1024") -> ImageResult:
-    """Generate an image for Telegram delivery.
+class StubImageGenerator:
+    async def generate(self, *, prompt: str, settings: TelegramImagesSettings) -> ImageResult:
+        return ImageResult(
+            filename="takopi-image-request.svg",
+            content=_svg_placeholder(prompt, settings.size),
+            mime_type="image/svg+xml",
+            caption="Готово: image backend stub. Подключи provider=openai для реальной генерации.",
+        )
 
-    MVP backend: returns a deterministic SVG placeholder so the Telegram media
-    pipeline can be exercised before a real provider is configured.
-    """
-    return ImageResult(
-        filename="takopi-image-request.svg",
-        content=_svg_placeholder(prompt, size),
-        mime_type="image/svg+xml",
-        caption="Готово: image backend stub. Подключи реальный provider следующим шагом.",
-    )
+
+class OpenAIImageGenerator:
+    async def generate(self, *, prompt: str, settings: TelegramImagesSettings) -> ImageResult:
+        api_key = settings.api_key or os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise ImageGenerationError(
+                "OpenAI image backend needs images.api_key or OPENAI_API_KEY."
+            )
+        try:
+            async with AsyncOpenAI(
+                base_url=settings.base_url,
+                api_key=api_key,
+                timeout=180,
+            ) as client:
+                response = await client.images.generate(
+                    model=settings.model,
+                    prompt=prompt,
+                    size=settings.size,
+                    quality=settings.quality,
+                    n=1,
+                    output_format=settings.output_format,
+                )
+        except TypeError:
+            # Older OpenAI SDKs may not know output_format yet.
+            async with AsyncOpenAI(
+                base_url=settings.base_url,
+                api_key=api_key,
+                timeout=180,
+            ) as client:
+                response = await client.images.generate(
+                    model=settings.model,
+                    prompt=prompt,
+                    size=settings.size,
+                    quality=settings.quality,
+                    n=1,
+                )
+        except OpenAIError as exc:
+            logger.error(
+                "openai.image.generate.error",
+                error=str(exc),
+                error_type=exc.__class__.__name__,
+            )
+            raise ImageGenerationError(str(exc).strip() or "OpenAI image generation failed") from exc
+
+        if not response.data:
+            raise ImageGenerationError("OpenAI image generation returned no image.")
+        b64_json = response.data[0].b64_json
+        if not b64_json:
+            raise ImageGenerationError("OpenAI image generation returned no image bytes.")
+        try:
+            content = base64.b64decode(b64_json)
+        except ValueError as exc:
+            raise ImageGenerationError("OpenAI image generation returned invalid image bytes.") from exc
+
+        ext = settings.output_format
+        return ImageResult(
+            filename=f"takopi-image.{ext}",
+            content=content,
+            mime_type=f"image/{'jpeg' if ext == 'jpeg' else ext}",
+            caption="Готово.",
+        )
+
+
+def _generator_for(provider: ImageProvider) -> ImageGenerator:
+    if provider == "openai":
+        return OpenAIImageGenerator()
+    return StubImageGenerator()
+
+
+async def generate_image(
+    prompt: str,
+    settings: TelegramImagesSettings,
+    *,
+    generator: ImageGenerator | None = None,
+) -> ImageResult:
+    """Generate an image for Telegram delivery."""
+    if not settings.enabled:
+        raise ImageGenerationError("image generation is disabled in Telegram config.")
+    if generator is None:
+        generator = _generator_for(settings.provider)
+    return await generator.generate(prompt=prompt, settings=settings)
