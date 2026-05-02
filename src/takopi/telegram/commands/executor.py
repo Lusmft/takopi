@@ -26,6 +26,7 @@ from ...scheduler import ThreadScheduler
 from ...transport import MessageRef, RenderedMessage, SendOptions
 from ...transport_runtime import TransportRuntime
 from ...utils.paths import reset_run_base_dir, set_run_base_dir
+from ..artifacts import send_image_artifacts
 from ..bridge import send_plain
 from ..engine_overrides import supports_reasoning
 
@@ -221,6 +222,18 @@ async def _run_engine(
                 reply_to=reply_ref,
                 thread_id=thread_id,
             )
+            async def after_completed(
+                completed_incoming: RunnerIncomingMessage,
+                tracker: ProgressTracker,
+                completed_cwd: Path | None,
+            ) -> None:
+                await send_image_artifacts(
+                    cfg,
+                    incoming=completed_incoming,
+                    tracker=tracker,
+                    cwd=completed_cwd,
+                )
+
             with apply_run_options(run_options):
                 await handle_message(
                     exec_cfg,
@@ -233,6 +246,8 @@ async def _run_engine(
                     running_tasks=running_tasks,
                     on_thread_known=on_thread_known,
                     progress_ref=progress_ref,
+                    after_completed=after_completed,
+                    cwd=cwd,
                 )
         finally:
             reset_run_base_dir(run_base_token)

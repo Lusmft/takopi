@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from dataclasses import dataclass, field
 
 import anyio
@@ -451,6 +452,8 @@ async def handle_message(
     | None = None,
     progress_ref: MessageRef | None = None,
     clock: Callable[[], float] = time.monotonic,
+    after_completed: Callable[[IncomingMessage, ProgressTracker, Path | None], Awaitable[None]] | None = None,
+    cwd: Path | None = None,
 ) -> None:
     logger.info(
         "handle.incoming",
@@ -677,3 +680,5 @@ async def handle_message(
         delete_tag="final",
         thread_id=incoming.thread_id,
     )
+    if after_completed is not None:
+        await after_completed(incoming, progress_tracker, cwd)
