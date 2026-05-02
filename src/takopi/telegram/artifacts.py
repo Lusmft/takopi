@@ -88,7 +88,7 @@ def collect_image_artifacts(
     *,
     tracker: ProgressTracker,
     cwd: Path | None,
-    max_count: int = 4,
+    max_count: int = 10,
     since: float | None = None,
 ) -> list[TelegramArtifact]:
     if cwd is None:
