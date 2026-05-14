@@ -79,7 +79,7 @@ def _normalize_interactive_text(text: str) -> str:
             continue
         if line.startswith(("─", "╭", "╰", "│")):
             continue
-        if any(marker in line for marker in chrome_markers):
+        if any(marker in line for marker in chrome_markers) and not line.strip().startswith(("●", "⏺")):
             continue
         if re.fullmatch(r"[▐▛▜▌▝▘█ ]+", line.strip()):
             continue
@@ -97,24 +97,39 @@ def _extract_interactive_answer(before: str, after: str, prompt: str) -> str:
     clean = _normalize_interactive_text(suffix)
     out: list[str] = []
     prompt_text = prompt.strip()
+    saw_assistant = False
     for line in clean.splitlines():
         s = line.strip()
         if not s:
             continue
         if s.startswith("❯"):
+            if saw_assistant:
+                break
             continue
         if prompt_text and prompt_text in s:
             continue
-        s = re.sub(r"^[●⏺✻]\s*", "", s)
+        assistant_line = s.startswith(("●", "⏺"))
+        thinking_line = s.startswith("✻")
+        if thinking_line:
+            if saw_assistant:
+                break
+            continue
+        if not assistant_line and not saw_assistant:
+            # Ignore bottom prompt suggestions / overlays such as "gh auth login".
+            continue
+        if assistant_line:
+            saw_assistant = True
+        s = re.sub(r"^[●⏺]\s*", "", s)
         if re.search(
             r"\b(?:Churned|Worked|Brewed|Baked|Sautéed|Sauteed|Stewed|Cooked|"
             r"Simmered|Toasted|Roasted|Stirred) for \d+s",
             s,
         ):
+            if saw_assistant:
+                break
             continue
         out.append(s)
     return "\n".join(out).strip()
-
 
 def _slash_segment_after_latest_prompt(prompt: str, pane: str) -> str:
     prompt_text = prompt.strip()

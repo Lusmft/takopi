@@ -573,3 +573,25 @@ def test_interactive_restarts_session_when_cwd_changes(monkeypatch, tmp_path) ->
 
     assert ["kill-session", "-t", "takopi_test"] in calls
     assert any(call[:4] == ["tmux", "new-session", "-d", "-x"] for call in calls)
+
+
+def test_extract_interactive_answer_ignores_bottom_prompt_suggestion() -> None:
+    pane = """❯ в каком cwd ты сейчас находишься? ответь одной строкой
+
+● /root/usegateway
+
+✻ Brewed for 1s
+
+────────────────────────────────────────────────────────────────────────────────
+❯ покажи последние коммиты
+────────────────────────────────────────────────────────────────────────────────
+  gh auth login
+"""
+
+    answer = claude_runner._extract_interactive_answer(
+        "",
+        pane,
+        "в каком cwd ты сейчас находишься? ответь одной строкой",
+    )
+
+    assert answer == "/root/usegateway"
