@@ -101,18 +101,14 @@ def collect_image_artifacts(
     # ./artifacts/*.png then only mentions the path in the final answer.
     candidates.extend(_iter_recent_image_files(cwd, since=since))
     file_change_paths: list[str] = []
-    # For explicit image/screenshot requests the caller passes since=None.
-    # In that hot path, avoid tracker/action parsing entirely: it is runner-specific
-    # and can block delivery even when the artifact already exists on disk.
-    if since is not None:
-        try:
-            file_change_paths = _iter_file_change_paths(tracker)
-        except Exception as exc:
-            logger.warning(
-                "telegram.artifacts.tracker_scan_failed",
-                error=str(exc),
-                error_type=type(exc).__name__,
-            )
+    try:
+        file_change_paths = _iter_file_change_paths(tracker)
+    except (AttributeError, TypeError, ValueError) as exc:
+        logger.warning(
+            "telegram.artifacts.tracker_scan_failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
     for raw_path in file_change_paths:
         path = _resolve_artifact_path(raw_path, cwd=cwd)
         if path is not None:
@@ -148,15 +144,16 @@ async def send_image_artifacts(
     cwd: Path | None,
     since: float | None = None,
 ) -> int:
+    effective_cwd = cwd if cwd is not None else Path.cwd()
     logger.info(
         "telegram.artifacts.collect.start",
-        cwd=str(cwd) if cwd is not None else None,
+        cwd=str(effective_cwd) if effective_cwd is not None else None,
         since=since,
     )
-    artifacts = collect_image_artifacts(tracker=tracker, cwd=cwd, since=since)
+    artifacts = collect_image_artifacts(tracker=tracker, cwd=effective_cwd, since=since)
     logger.info(
         "telegram.artifacts.collect",
-        cwd=str(cwd) if cwd is not None else None,
+        cwd=str(effective_cwd) if effective_cwd is not None else None,
         count=len(artifacts),
         paths=[artifact.rel_path for artifact in artifacts],
     )

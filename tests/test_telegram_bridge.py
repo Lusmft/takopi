@@ -3565,3 +3565,41 @@ async def test_run_main_loop_mentions_only_skips_voice_and_files(
     assert calls["voice"] == 0
     assert calls["file"] == 0
     assert runner.calls == []
+
+
+@pytest.mark.anyio
+async def test_run_engine_sanitizes_claude_slash_commands_with_attachments() -> None:
+    transport = _CaptureTransport()
+    runner = ScriptRunner([Return(answer="ok")], engine="claude")
+    exec_cfg = ExecBridgeConfig(
+        transport=transport,
+        presenter=MarkdownPresenter(),
+        final_notify=True,
+    )
+    runtime = TransportRuntime(
+        router=_make_router(runner),
+        projects=_empty_projects(),
+    )
+
+    await _run_engine(
+        exec_cfg=exec_cfg,
+        runtime=runtime,
+        running_tasks={},
+        chat_id=123,
+        user_msg_id=1,
+        text=(
+            "/ usage\n\n"
+            "Attached images:\n"
+            "- /tmp/file.jpg\n"
+            "[Telegram artifact delivery] screenshot"
+        ),
+        resume_token=None,
+        context=None,
+        reply_ref=None,
+        on_thread_known=None,
+        engine_override=None,
+        thread_id=None,
+        show_resume_line=False,
+    )
+
+    assert runner.calls[0][0] == "/usage"

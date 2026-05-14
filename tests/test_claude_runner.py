@@ -423,3 +423,63 @@ async def test_run_strips_anthropic_api_key_by_default(tmp_path, monkeypatch) ->
         if isinstance(event, CompletedEvent):
             answer = event.answer
     assert answer == "api=set"
+
+
+def test_interactive_resume_lines_are_disabled() -> None:
+    runner = ClaudeRunner(claude_cmd="claude", interactive=True)
+
+    assert runner.extract_resume("`claude --resume old-session`") is None
+    assert runner.is_resume_line("`claude --resume old-session`") is False
+
+
+def test_interactive_slash_overlay_uses_latest_prompt(tmp_path, monkeypatch) -> None:
+    runner = ClaudeRunner(
+        claude_cmd="claude",
+        interactive=True,
+        interactive_session="takopi_test",
+        interactive_cwd=str(tmp_path),
+    )
+    captured: list[tuple[str, str]] = []
+
+    def fake_ensure(*, session: str, cwd: str, claude_cmd: str) -> None:
+        captured.append(("ensure", session))
+
+    def fake_capture(session: str) -> str:
+        captured.append(("capture", session))
+        return """❯ /usage
+  ⎿ Settings dialog dismissed
+❯ /usage
+────────────────────────────────────────────────────
+  Settings  Status   Config   Usage   Stats
+
+  Current session
+  █                                                  2% used
+
+  Esc to cancel
+"""
+
+    def fake_send(session: str, text: str) -> None:
+        captured.append(("send", text))
+
+    def fake_render(text: str, *, cwd: str, name_hint: str = "claude_usage") -> str:
+        assert "Current session" in text
+        assert "dialog dismissed" not in text
+        assert cwd == str(tmp_path)
+        return "artifacts/usage.png"
+
+    monkeypatch.setattr(claude_runner, "_ensure_interactive_claude_session", fake_ensure)
+    monkeypatch.setattr(claude_runner, "_tmux_capture", fake_capture)
+    monkeypatch.setattr(claude_runner, "_tmux_send_text", fake_send)
+    monkeypatch.setattr(claude_runner, "_render_overlay_png", fake_render)
+    monkeypatch.setattr(claude_runner.subprocess, "run", lambda *_args, **_kwargs: None)
+
+    async def collect_answer() -> str:
+        async for event in runner.run("/usage", None):
+            if isinstance(event, CompletedEvent):
+                return event.answer
+        raise AssertionError("missing completed event")
+
+    answer = anyio.run(collect_answer)
+
+    assert answer == "Скриншот: artifacts/usage.png"
+    assert ("send", "/usage") in captured

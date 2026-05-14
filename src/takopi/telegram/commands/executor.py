@@ -29,7 +29,7 @@ from ...transport import MessageRef, RenderedMessage, SendOptions
 from ...transport_runtime import TransportRuntime
 from ...utils.paths import reset_run_base_dir, set_run_base_dir
 from ..artifacts import collect_image_artifacts, send_image_artifacts
-from ..bridge import send_plain
+from ..bridge import TelegramBridgeConfig, send_plain
 from ..engine_overrides import supports_reasoning
 
 logger = get_logger(__name__)
@@ -150,6 +150,17 @@ def _with_artifact_delivery_hint(text: str) -> str:
     return f"{text.rstrip()}\n\n{_ARTIFACT_DELIVERY_HINT}"
 
 
+def _interactive_slash_command(text: str) -> str | None:
+    # Telegram may append attachment context after the user's text. For Claude Code
+    # slash commands, pass only the command itself; otherwise /usage can turn into a
+    # file-read prompt and hang behind a TUI permission dialog.
+    first = text.strip().splitlines()[0] if text.strip() else ""
+    normalized = first.lower().replace(" ", "")
+    if normalized in {"/usage", "/status", "/config", "/stats"}:
+        return normalized
+    return None
+
+
 async def _send_runner_unavailable(
     exec_cfg: ExecBridgeConfig,
     *,
@@ -195,7 +206,7 @@ async def _run_engine(
     show_resume_line: bool = True,
     progress_ref: MessageRef | None = None,
     run_options: EngineRunOptions | None = None,
-    telegram_cfg: "TelegramBridgeConfig | None" = None,
+    telegram_cfg: TelegramBridgeConfig | None = None,
 ) -> None:
     reply = partial(
         send_plain,
@@ -251,12 +262,14 @@ async def _run_engine(
                 run_fields["cwd"] = str(cwd)
             bind_run_context(**run_fields)
             context_line = runtime.format_context_line(context)
-            is_image_request = _is_image_request(text)
+            slash_command = _interactive_slash_command(text)
+            runner_text = slash_command or text
+            is_image_request = False if slash_command is not None else _is_image_request(text)
             started_wall_time = time.time()
             incoming = RunnerIncomingMessage(
                 channel_id=chat_id,
                 message_id=user_msg_id,
-                text=_with_artifact_delivery_hint(text),
+                text=runner_text if slash_command is not None else _with_artifact_delivery_hint(runner_text),
                 reply_to=reply_ref,
                 thread_id=thread_id,
             )
