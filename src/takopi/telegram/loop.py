@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -45,7 +45,6 @@ from .commands.handlers import (
     parse_slash_command,
     get_reserved_commands,
     run_engine,
-    save_file_put,
     stage_file_put,
     set_command_menu,
     should_show_resume_line,
@@ -62,6 +61,7 @@ from .topics import (
     _validate_topics_setup,
 )
 from .client import poll_incoming
+from .channel_bridge import forward_to_channel, run_reply_server
 from .chat_prefs import ChatPrefsStore, resolve_prefs_path
 from .chat_sessions import ChatSessionStore, resolve_sessions_path
 from .engine_overrides import merge_overrides
@@ -1071,6 +1071,8 @@ async def run_main_loop(
                 )
             else:
                 poller_fn = poller
+            if cfg.channel_bridge.enabled:
+                tg.start_soon(run_reply_server, cfg)
             config_path = cfg.runtime.config_path
             watch_enabled = bool(watch_config) and config_path is not None
 
@@ -1370,6 +1372,17 @@ async def run_main_loop(
                 if resume_decision.handled_by_running_task:
                     return
                 resume_token = resume_decision.resume_token
+                if cfg.channel_bridge.enabled and engine_override == "claude":
+                    await forward_to_channel(
+                        cfg,
+                        chat_id=chat_id,
+                        user_msg_id=user_msg_id,
+                        text=prompt_text,
+                        context=context,
+                        thread_id=msg.thread_id,
+                        engine=engine_override,
+                    )
+                    return
                 if resume_token is None:
                     await run_job(
                         chat_id,
