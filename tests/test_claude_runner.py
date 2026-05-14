@@ -595,3 +595,40 @@ def test_extract_interactive_answer_ignores_bottom_prompt_suggestion() -> None:
     )
 
     assert answer == "/root/usegateway"
+
+
+def test_extract_interactive_answer_skips_tool_blocks() -> None:
+    pane = """❯ проект запущен?
+
+● Bash(ps aux | grep -E \"python\")
+  ⎿  root 123 python app.py
+     … +21 lines (ctrl+o to expand)
+
+● Bash(ss -tlnp 2>/dev/null | head -20)
+  ⎿  Waiting…
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   ss -tlnp 2>/dev/null | head -20
+   Check listening ports
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+● Проект запущен: backend и worker-процессы активны.
+  Порт API: 8000.
+
+✻ Brewed for 1s
+
+❯
+  gh auth login
+"""
+
+    answer = claude_runner._extract_interactive_answer("", pane, "проект запущен?")
+
+    assert "Bash(" not in answer
+    assert "Waiting" not in answer
+    assert "gh auth" not in answer
+    assert answer == "Проект запущен: backend и worker-процессы активны.\nПорт API: 8000."

@@ -97,13 +97,14 @@ def _extract_interactive_answer(before: str, after: str, prompt: str) -> str:
     clean = _normalize_interactive_text(suffix)
     out: list[str] = []
     prompt_text = prompt.strip()
-    saw_assistant = False
+    saw_final_answer = False
+    skip_tool_output = False
     for line in clean.splitlines():
         s = line.strip()
         if not s:
             continue
         if s.startswith("❯"):
-            if saw_assistant:
+            if saw_final_answer:
                 break
             continue
         if prompt_text and prompt_text in s:
@@ -111,21 +112,30 @@ def _extract_interactive_answer(before: str, after: str, prompt: str) -> str:
         assistant_line = s.startswith(("●", "⏺"))
         thinking_line = s.startswith("✻")
         if thinking_line:
-            if saw_assistant:
+            if saw_final_answer:
                 break
             continue
-        if not assistant_line and not saw_assistant:
+        if assistant_line:
+            body = re.sub(r"^[●⏺]\s*", "", s)
+            if re.match(r"^(?:Bash|Read|Edit|Write|Grep|Glob|LS|TodoWrite)\(", body):
+                skip_tool_output = True
+                continue
+            skip_tool_output = False
+            s = body
+            saw_final_answer = True
+        elif skip_tool_output:
+            # Tool output lines (⎿, expanded command output, permission prompts) are UI,
+            # not the assistant's final answer for Telegram.
+            continue
+        elif not saw_final_answer:
             # Ignore bottom prompt suggestions / overlays such as "gh auth login".
             continue
-        if assistant_line:
-            saw_assistant = True
-        s = re.sub(r"^[●⏺]\s*", "", s)
         if re.search(
             r"\b(?:Churned|Worked|Brewed|Baked|Sautéed|Sauteed|Stewed|Cooked|"
-            r"Simmered|Toasted|Roasted|Stirred) for \d+s",
+            r"Simmered|Toasted|Roasted|Stirred|Crunched|Shimmying) for \d+s",
             s,
         ):
-            if saw_assistant:
+            if saw_final_answer:
                 break
             continue
         out.append(s)
