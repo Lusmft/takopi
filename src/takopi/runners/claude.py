@@ -272,7 +272,25 @@ def _wait_interactive_answer(session: str, before: str, prompt: str, timeout_s: 
 
 def _ensure_interactive_claude_session(*, session: str, cwd: str, claude_cmd: str) -> None:
     if _tmux_has_session(session):
-        return
+        current_cwd = _tmux_run(
+            ["display-message", "-p", "-t", session, "#{pane_current_path}"],
+            check=False,
+        ).stdout.strip()
+        try:
+            current_path = Path(current_cwd).resolve(strict=False)
+            wanted_path = Path(cwd).expanduser().resolve(strict=False)
+        except OSError:
+            current_path = Path(current_cwd)
+            wanted_path = Path(cwd).expanduser()
+        if current_path == wanted_path:
+            return
+        logger.info(
+            "interactive.session.cwd_changed",
+            session=session,
+            old_cwd=current_cwd,
+            new_cwd=str(wanted_path),
+        )
+        _tmux_run(["kill-session", "-t", session], check=False)
     subprocess.run(
         ["tmux", "new-session", "-d", "-x", "180", "-y", "50", "-s", session, "-c", cwd, claude_cmd],
         check=True,

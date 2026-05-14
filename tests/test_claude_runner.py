@@ -536,3 +536,40 @@ def test_interactive_uses_run_base_dir_for_overlay_artifacts(tmp_path, monkeypat
     assert answer == "Скриншот: artifacts/usage.png"
     assert ("ensure_cwd", str(tmp_path)) in captured
     assert ("render_cwd", str(tmp_path)) in captured
+
+
+def test_interactive_restarts_session_when_cwd_changes(monkeypatch, tmp_path) -> None:
+    calls: list[list[str]] = []
+
+    class Proc:
+        stdout = "/root\n"
+
+    def fake_has_session(session: str) -> bool:
+        return True
+
+    def fake_tmux_run(args: list[str], *, check: bool = True):
+        calls.append(args)
+        return Proc()
+
+    def fake_subprocess_run(args, **kwargs):
+        calls.append(list(args))
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return Completed()
+
+    monkeypatch.setattr(claude_runner, "_tmux_has_session", fake_has_session)
+    monkeypatch.setattr(claude_runner, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(claude_runner, "_tmux_capture", lambda _session: "")
+    monkeypatch.setattr(claude_runner.time, "sleep", lambda _seconds: None)
+
+    claude_runner._ensure_interactive_claude_session(
+        session="takopi_test",
+        cwd=str(tmp_path),
+        claude_cmd="claude",
+    )
+
+    assert ["kill-session", "-t", "takopi_test"] in calls
+    assert any(call[:4] == ["tmux", "new-session", "-d", "-x"] for call in calls)
