@@ -18,6 +18,7 @@ from ..events import EventFactory
 from ..logging import get_logger
 from ..model import Action, ActionKind, EngineId, ResumeToken, TakopiEvent, StartedEvent
 from ..runner import JsonlSubprocessRunner, ResumeTokenMixin, Runner
+from ..utils.paths import get_run_base_dir
 from .run_options import get_run_options
 from ..schemas import claude as claude_schema
 from .tool_actions import tool_input_path, tool_kind_and_title
@@ -576,10 +577,11 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         import anyio
         token = resume or ResumeToken(engine=ENGINE, value=self.interactive_session)
         yield StartedEvent(engine=ENGINE, resume=token, title=self.session_title, meta={"mode": "interactive"})
+        run_cwd = str(get_run_base_dir() or Path(self.interactive_cwd))
         await anyio.to_thread.run_sync(
             lambda: _ensure_interactive_claude_session(
                 session=self.interactive_session,
-                cwd=self.interactive_cwd,
+                cwd=run_cwd,
                 claude_cmd=self.claude_cmd,
             )
         )
@@ -591,7 +593,7 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
                 before,
                 prompt,
                 self.interactive_timeout,
-                cwd=self.interactive_cwd,
+                cwd=run_cwd,
             )
         )
         yield EventFactory(ENGINE).completed_ok(answer=answer, resume=token)
