@@ -1,5 +1,11 @@
 # changelog
 
+## v0.23.4 (2026-05-25)
+
+### changes
+
+- require Sulguk 0.12.0 for loose list item rendering and remove the local first-paragraph list shim
+
 ## v0.23.3 (2026-05-16)
 
 ### fixes
