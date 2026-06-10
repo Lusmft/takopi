@@ -108,6 +108,9 @@ class TelegramChannelBridgeSettings(BaseModel):
     reply_port: StrictInt = Field(default=8789, ge=1, le=65535)
     shared_secret: NonEmptyStr | None = None
     send_progress: bool = True
+    live_progress: bool = False
+    tmux_session: NonEmptyStr | None = None
+    poll_interval_s: float = Field(default=1.0, ge=0.2, le=10.0)
 
 
 class TelegramTransportSettings(BaseModel):

@@ -2,18 +2,284 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import subprocess
+import time
 from contextlib import suppress
-from dataclasses import asdict
+from collections.abc import Awaitable, Callable
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import httpx
 
 from ..context import RunContext
 from ..logging import get_logger
+from ..markdown import MarkdownParts
+from ..runners.claude import _normalize_interactive_text
 from ..transport import MessageRef, RenderedMessage, SendOptions
 from .bridge import TelegramBridgeConfig, send_plain
+from .render import MAX_BODY_CHARS, prepare_telegram, prepare_telegram_multi
 
 logger = get_logger(__name__)
+
+_MAX_LIVE_PROGRESS_CHARS = min(1600, MAX_BODY_CHARS)
+
+
+@dataclass(slots=True)
+class LiveProgressRun:
+    progress_ref: MessageRef
+    started_at: float
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    last_text: str = ""
+
+
+_LIVE_PROGRESS_RUNS: dict[tuple[int, int], LiveProgressRun] = {}
+_LIVE_PROGRESS_BY_PROGRESS: dict[tuple[int, int], tuple[int, int]] = {}
+_LIVE_PROGRESS_LOCK = asyncio.Lock()
+
+
+def _render_channel_reply(text: str) -> RenderedMessage:
+    payloads = prepare_telegram_multi(
+        MarkdownParts(header="", body=text, footer=""),
+        max_body_chars=MAX_BODY_CHARS,
+    )
+    first_text, first_entities = payloads[0]
+    extra: dict[str, Any] = {"entities": first_entities}
+    if len(payloads) > 1:
+        extra["followups"] = [
+            RenderedMessage(text=followup_text, extra={"entities": followup_entities})
+            for followup_text, followup_entities in payloads[1:]
+        ]
+    return RenderedMessage(text=first_text, extra=extra)
+
+
+def _render_live_progress(
+    *,
+    text: str,
+    elapsed_s: float,
+    status: str,
+    engine: str = "claude",
+) -> RenderedMessage:
+    body = text.strip() or "↻ Working…"
+    if len(body) > _MAX_LIVE_PROGRESS_CHARS:
+        body = body[: _MAX_LIVE_PROGRESS_CHARS - 1] + "…"
+    rendered_text, entities = prepare_telegram(
+        MarkdownParts(
+            header=f"{status} · {engine} · {max(0, int(elapsed_s))}s",
+            body=body,
+            footer=None,
+        )
+    )
+    return RenderedMessage(text=rendered_text, extra={"entities": entities})
+
+
+def _tmux_capture(session: str) -> str:
+    proc = subprocess.run(
+        ["tmux", "capture-pane", "-pt", session, "-S", "-200"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout
+
+
+def _tmux_send_choice(session: str, choice: str) -> bool:
+    proc = subprocess.run(
+        ["tmux", "send-keys", "-t", session, choice, "Enter"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc.returncode == 0
+
+
+def _permission_choice(text: str | None) -> str | None:
+    if text is None:
+        return None
+    stripped = text.strip()
+    return stripped if stripped in {"1", "2", "3"} else None
+
+
+def _looks_like_claude_permission_prompt(text: str) -> bool:
+    normalized = text.lower()
+    return (
+        "do you want to proceed" in normalized
+        or "allow reading from" in normalized
+        or "yes, allow" in normalized
+    )
+
+
+def _latest_takopi_segment(pane: str) -> str:
+    marker = "← takopi:"
+    idx = pane.rfind(marker)
+    return pane[idx:] if idx >= 0 else pane
+
+
+def _extract_live_progress_text(pane: str) -> str:
+    clean = _normalize_interactive_text(_latest_takopi_segment(pane))
+    lines: list[str] = []
+    for raw in clean.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith("❯"):
+            break
+        if s.startswith("← takopi:"):
+            continue
+        if "gh auth login" in s:
+            continue
+        if s.startswith(("●", "⏺")):
+            body = re.sub(r"^[●⏺]\s*", "", s)
+            lines.append(body)
+            continue
+        if s.startswith("✻"):
+            body = re.sub(r"^✻\s*", "", s)
+            lines.append(f"↻ {body}")
+            continue
+        lines.append(s)
+    if not lines:
+        return "↻ Working…"
+    return "\n".join(lines[-12:])
+
+
+async def _register_live_progress(chat_id: int, user_msg_id: int, run: LiveProgressRun) -> None:
+    async with _LIVE_PROGRESS_LOCK:
+        source_key = (chat_id, user_msg_id)
+        progress_key = (chat_id, run.progress_ref.message_id)
+        _LIVE_PROGRESS_RUNS[source_key] = run
+        _LIVE_PROGRESS_BY_PROGRESS[progress_key] = source_key
+
+
+async def _pop_live_progress(chat_id: int, user_msg_id: int) -> LiveProgressRun | None:
+    async with _LIVE_PROGRESS_LOCK:
+        source_key = (chat_id, user_msg_id)
+        run = _LIVE_PROGRESS_RUNS.pop(source_key, None)
+        if run is not None:
+            _LIVE_PROGRESS_BY_PROGRESS.pop((chat_id, run.progress_ref.message_id), None)
+        return run
+
+
+async def handle_live_progress_choice(
+    cfg: TelegramBridgeConfig,
+    *,
+    chat_id: int,
+    reply_to_message_id: int | None,
+    text: str | None,
+    reply: Callable[..., Awaitable[None]],
+) -> bool:
+    choice = _permission_choice(text)
+    if choice is None or reply_to_message_id is None:
+        return False
+
+    async with _LIVE_PROGRESS_LOCK:
+        source_key = _LIVE_PROGRESS_BY_PROGRESS.get((chat_id, reply_to_message_id))
+        run = _LIVE_PROGRESS_RUNS.get(source_key) if source_key is not None else None
+
+    if run is None:
+        return False
+
+    session = cfg.channel_bridge.tmux_session
+    if not session:
+        await reply(text="live progress tmux session is not configured.")
+        return True
+
+    pane = await asyncio.to_thread(_tmux_capture, session)
+    progress_text = _extract_live_progress_text(pane)
+    if not _looks_like_claude_permission_prompt(progress_text):
+        await reply(text="no visible Claude permission prompt to answer.")
+        return True
+
+    sent = await asyncio.to_thread(_tmux_send_choice, session, choice)
+    if not sent:
+        await reply(text="failed to send permission choice to Claude tmux session.")
+        return True
+
+    run.last_text = progress_text
+    await reply(text=f"sent permission choice `{choice}` to Claude.")
+    return True
+
+
+async def _run_live_progress(
+    cfg: TelegramBridgeConfig,
+    *,
+    run: LiveProgressRun,
+    tmux_session: str,
+    engine: str,
+) -> None:
+    poll_s = cfg.channel_bridge.poll_interval_s
+    try:
+        while not run.done.is_set():
+            pane = await asyncio.to_thread(_tmux_capture, tmux_session)
+            text = _extract_live_progress_text(pane)
+            if text != run.last_text:
+                run.last_text = text
+                await cfg.exec_cfg.transport.edit(
+                    ref=run.progress_ref,
+                    message=_render_live_progress(
+                        text=text,
+                        elapsed_s=time.time() - run.started_at,
+                        status="working",
+                        engine=engine,
+                    ),
+                )
+            try:
+                await asyncio.wait_for(run.done.wait(), timeout=poll_s)
+            except TimeoutError:
+                continue
+        pane = await asyncio.to_thread(_tmux_capture, tmux_session)
+        text = _extract_live_progress_text(pane)
+        await cfg.exec_cfg.transport.edit(
+            ref=run.progress_ref,
+            message=_render_live_progress(
+                text=text,
+                elapsed_s=time.time() - run.started_at,
+                status="done",
+                engine=engine,
+            ),
+        )
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        logger.warning("telegram.channel_bridge.live_progress_failed", error=str(exc))
+
+
+async def maybe_start_live_progress(
+    cfg: TelegramBridgeConfig,
+    *,
+    chat_id: int,
+    user_msg_id: int,
+    thread_id: int | None,
+    engine: str | None,
+) -> None:
+    bridge = cfg.channel_bridge
+    if not bridge.live_progress or not bridge.tmux_session:
+        return
+    sent = await cfg.exec_cfg.transport.send(
+        channel_id=chat_id,
+        message=_render_live_progress(
+            text="↻ Working…",
+            elapsed_s=0,
+            status="working",
+            engine=engine or "claude",
+        ),
+        options=SendOptions(
+            reply_to=MessageRef(channel_id=chat_id, message_id=user_msg_id),
+            thread_id=thread_id,
+            notify=False,
+        ),
+    )
+    if sent is None:
+        return
+    run = LiveProgressRun(progress_ref=sent, started_at=time.time())
+    await _register_live_progress(chat_id, user_msg_id, run)
+    asyncio.create_task(
+        _run_live_progress(
+            cfg,
+            run=run,
+            tmux_session=bridge.tmux_session,
+            engine=engine or "claude",
+        )
+    )
 
 
 def _context_payload(context: RunContext | None) -> dict[str, Any] | None:
@@ -66,6 +332,13 @@ async def forward_to_channel(
             thread_id=thread_id,
         )
         return False
+    await maybe_start_live_progress(
+        cfg,
+        chat_id=chat_id,
+        user_msg_id=user_msg_id,
+        thread_id=thread_id,
+        engine=engine,
+    )
     if bridge.send_progress:
         await send_plain(
             cfg.exec_cfg.transport,
@@ -124,9 +397,13 @@ async def run_reply_server(cfg: TelegramBridgeConfig) -> None:
             )
             await cfg.exec_cfg.transport.send(
                 channel_id=chat_id,
-                message=RenderedMessage(text=text),
+                message=_render_channel_reply(text),
                 options=SendOptions(reply_to=reply_to, thread_id=thread_id),
             )
+            if reply_to_message_id is not None:
+                run = await _pop_live_progress(chat_id, reply_to_message_id)
+                if run is not None:
+                    run.done.set()
             await _write_response(writer, 200, b"ok")
         except (OSError, ValueError, json.JSONDecodeError, KeyError) as exc:
             logger.exception("telegram.channel_bridge.reply_failed", error=str(exc))

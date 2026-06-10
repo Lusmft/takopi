@@ -1,5 +1,8 @@
+import asyncio
+import textwrap
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import anyio
@@ -15,7 +18,11 @@ import takopi.telegram.loop as telegram_loop
 import takopi.telegram.topics as telegram_topics
 from takopi.directives import parse_directives
 from takopi.telegram.api_models import Chat, File, ForumTopic, Message, Update, User
-from takopi.settings import TelegramFilesSettings, TelegramTopicsSettings
+from takopi.settings import (
+    TelegramChannelBridgeSettings,
+    TelegramFilesSettings,
+    TelegramTopicsSettings,
+)
 from takopi.telegram.bridge import (
     TelegramBridgeConfig,
     TelegramPresenter,
@@ -29,6 +36,7 @@ from takopi.telegram.bridge import (
 )
 from takopi.telegram.client import BotClient
 from takopi.telegram.render import MAX_BODY_CHARS
+import takopi.telegram.channel_bridge as telegram_channel_bridge
 from takopi.telegram.topic_state import TopicStateStore, resolve_state_path
 from takopi.telegram.chat_sessions import ChatSessionStore, resolve_sessions_path
 from takopi.telegram.chat_prefs import ChatPrefsStore, resolve_prefs_path
@@ -264,6 +272,126 @@ def test_telegram_presenter_final_clears_button() -> None:
     rendered = presenter.render_final(state, elapsed_s=0.0, status="done", answer="ok")
 
     assert rendered.extra["reply_markup"]["inline_keyboard"] == []
+
+
+def test_channel_bridge_reply_render_splits_followups() -> None:
+    rendered = telegram_channel_bridge._render_channel_reply("x" * (MAX_BODY_CHARS + 50))
+
+    assert rendered.text
+    followups = rendered.extra.get("followups")
+    assert followups
+    assert all(isinstance(item, RenderedMessage) for item in followups)
+
+
+def test_latest_takopi_segment_uses_last_marker() -> None:
+    pane = "old\n← takopi: first\nfoo\n← takopi: second\nbar\n❯"
+
+    assert telegram_channel_bridge._latest_takopi_segment(pane).startswith("← takopi: second")
+
+
+def test_extract_live_progress_text_filters_prompt_chrome() -> None:
+    pane = """← takopi: привет
+
+● Bash(pwd)
+⎿ /root/usegateway
+
+✻ Worked for 3s
+
+❯ prompt
+gh auth login
+""" 
+
+    text = telegram_channel_bridge._extract_live_progress_text(pane)
+
+    assert "Bash(pwd)" in text
+    assert "Worked for 3s" in text
+    assert "gh auth login" not in text
+
+
+def test_live_progress_choice_requires_permission_prompt(monkeypatch):
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS.clear()
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS.clear()
+    run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=telegram_channel_bridge.MessageRef(channel_id=123, message_id=10),
+        started_at=0,
+    )
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS[(123, 1)] = run
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS[(123, 10)] = (123, 1)
+    cfg = SimpleNamespace(channel_bridge=SimpleNamespace(tmux_session="sess"))
+    sent: list[tuple[str, str]] = []
+    replies: list[str] = []
+
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_capture", lambda session: "← takopi: working")
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_choice",
+        lambda session, choice: sent.append((session, choice)) or True,
+    )
+
+    async def reply(**kwargs):
+        replies.append(kwargs["text"])
+
+    handled = asyncio.run(
+        telegram_channel_bridge.handle_live_progress_choice(
+            cfg,
+            chat_id=123,
+            reply_to_message_id=10,
+            text="2",
+            reply=reply,
+        )
+    )
+
+    assert handled is True
+    assert sent == []
+    assert replies == ["no visible Claude permission prompt to answer."]
+
+
+def test_live_progress_choice_sends_tmux_choice(monkeypatch):
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS.clear()
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS.clear()
+    run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=telegram_channel_bridge.MessageRef(channel_id=123, message_id=10),
+        started_at=0,
+    )
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS[(123, 1)] = run
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS[(123, 10)] = (123, 1)
+    cfg = SimpleNamespace(channel_bridge=SimpleNamespace(tmux_session="sess"))
+    replies: list[str] = []
+    sent: list[tuple[str, str]] = []
+    pane = textwrap.dedent(
+        """
+        ← takopi: prompt
+        Read file
+        Do you want to proceed?
+        1. Yes
+        2. Yes, allow reading from uploads/ during this session
+        3. No
+        """
+    )
+
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_capture", lambda session: pane)
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_choice",
+        lambda session, choice: sent.append((session, choice)) or True,
+    )
+
+    async def reply(**kwargs):
+        replies.append(kwargs["text"])
+
+    handled = asyncio.run(
+        telegram_channel_bridge.handle_live_progress_choice(
+            cfg,
+            chat_id=123,
+            reply_to_message_id=10,
+            text="2",
+            reply=reply,
+        )
+    )
+
+    assert handled is True
+    assert sent == [("sess", "2")]
+    assert replies == ["sent permission choice `2` to Claude."]
 
 
 def test_telegram_presenter_split_overflow_adds_followups() -> None:
@@ -2513,6 +2641,273 @@ async def test_run_main_loop_prompt_upload_auto_resumes_chat_sessions(
         engine=CODEX_ENGINE,
         value=resume_value,
     )
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_image_upload_without_caption_prompts_runner(
+    tmp_path: Path,
+) -> None:
+    payload = b"image-bytes"
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+
+    class _UploadBot(FakeBot):
+        async def get_file(self, file_id: str) -> File | None:
+            _ = file_id
+            return File(file_path="photos/image.jpg")
+
+        async def download_file(self, file_path: str) -> bytes | None:
+            _ = file_path
+            return payload
+
+    transport = FakeTransport()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(
+        router=_make_router(runner),
+        projects=ProjectsConfig(
+            projects={
+                "proj": ProjectConfig(
+                    alias="proj",
+                    path=project_dir,
+                    worktrees_dir=Path(".worktrees"),
+                )
+            },
+            default_project="proj",
+        ),
+    )
+    cfg = TelegramBridgeConfig(
+        bot=_UploadBot(),
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        files=TelegramFilesSettings(enabled=True, auto_put=True),
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+            document=TelegramDocument(
+                file_id="img-1",
+                file_name=None,
+                mime_type="image/jpeg",
+                file_size=len(payload),
+                raw={"file_id": "img-1"},
+            ),
+        )
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls
+    prompt_text, _ = runner.calls[0]
+    assert prompt_text.startswith("Describe this image.")
+    assert "Attached images:" in prompt_text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_image_upload_without_caption_forwards_to_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"image-bytes"
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+
+    class _UploadBot(FakeBot):
+        async def get_file(self, file_id: str) -> File | None:
+            _ = file_id
+            return File(file_path="photos/image.jpg")
+
+        async def download_file(self, file_path: str) -> bytes | None:
+            _ = file_path
+            return payload
+
+    forwarded: list[str] = []
+
+    async def fake_forward_to_channel(cfg, **kwargs):
+        _ = cfg
+        forwarded.append(kwargs["text"])
+        return True
+
+    monkeypatch.setattr(telegram_loop, "forward_to_channel", fake_forward_to_channel)
+
+    async def fake_run_reply_server(_cfg):
+        return None
+
+    monkeypatch.setattr(telegram_loop, "run_reply_server", fake_run_reply_server)
+
+    transport = FakeTransport()
+    runner = ScriptRunner([Return(answer="ok")], engine="claude")
+    runtime = TransportRuntime(
+        router=_make_router(runner),
+        projects=ProjectsConfig(
+            projects={
+                "proj": ProjectConfig(
+                    alias="proj",
+                    path=project_dir,
+                    worktrees_dir=Path(".worktrees"),
+                    default_engine="claude",
+                )
+            },
+            default_project="proj",
+        ),
+    )
+    cfg = TelegramBridgeConfig(
+        bot=_UploadBot(),
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        files=TelegramFilesSettings(enabled=True, auto_put=True),
+        channel_bridge=TelegramChannelBridgeSettings(enabled=True, send_progress=False),
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+            document=TelegramDocument(
+                file_id="img-1",
+                file_name=None,
+                mime_type="image/jpeg",
+                file_size=len(payload),
+                raw={"file_id": "img-1"},
+            ),
+        )
+
+    await run_main_loop(cfg, poller)
+
+    assert forwarded
+    assert forwarded[0].startswith("Describe this image.")
+    assert "Attached images:" in forwarded[0]
+    assert ".takopi-uploads/telegram/123/1/" in forwarded[0]
+    assert "/.takopi-uploads/" in (project_dir / ".gitignore").read_text()
+    assert runner.calls == []
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_media_group_images_without_caption_prompts_runner(
+    tmp_path: Path,
+) -> None:
+    payloads = {
+        "photos/one.jpg": b"one",
+        "photos/two.jpg": b"two",
+    }
+    file_map = {
+        "img-1": "photos/one.jpg",
+        "img-2": "photos/two.jpg",
+    }
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+
+    class _UploadBot(FakeBot):
+        async def get_file(self, file_id: str) -> File | None:
+            file_path = file_map.get(file_id)
+            if file_path is None:
+                return None
+            return File(file_path=file_path)
+
+        async def download_file(self, file_path: str) -> bytes | None:
+            return payloads.get(file_path)
+
+    transport = FakeTransport()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(
+        router=_make_router(runner),
+        projects=ProjectsConfig(
+            projects={
+                "proj": ProjectConfig(
+                    alias="proj",
+                    path=project_dir,
+                    worktrees_dir=Path(".worktrees"),
+                )
+            },
+            default_project="proj",
+        ),
+    )
+    cfg = TelegramBridgeConfig(
+        bot=_UploadBot(),
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=BATCH_MEDIA_GROUP_DEBOUNCE_S,
+        files=TelegramFilesSettings(enabled=True, auto_put=True),
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+            media_group_id="grp-1",
+            document=TelegramDocument(
+                file_id="img-1",
+                file_name=None,
+                mime_type="image/jpeg",
+                file_size=len(payloads["photos/one.jpg"]),
+                raw={"file_id": "img-1"},
+            ),
+        )
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=2,
+            text="",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+            media_group_id="grp-1",
+            document=TelegramDocument(
+                file_id="img-2",
+                file_name=None,
+                mime_type="image/jpeg",
+                file_size=len(payloads["photos/two.jpg"]),
+                raw={"file_id": "img-2"},
+            ),
+        )
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls
+    prompt_text, _ = runner.calls[0]
+    assert prompt_text.startswith("Describe these images.")
+    assert "Attached images:" in prompt_text
 
 
 @pytest.mark.anyio

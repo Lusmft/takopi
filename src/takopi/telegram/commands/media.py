@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
 
-from ...attachments import format_attachment_block
+from ...attachments import PromptAttachment, format_attachment_block
+from ...config import ConfigError
 from ...context import RunContext
 from ...directives import DirectiveError
 from ...transport_runtime import ResolvedMessage
@@ -76,11 +77,25 @@ async def _handle_media_group(
             return
     if cfg.files.enabled and cfg.files.auto_put:
         caption_text = command_msg.text.strip()
-        if cfg.files.auto_put_mode == "prompt" and caption_text:
+        all_images = all(
+            item.document is not None
+            and item.document.mime_type is not None
+            and item.document.mime_type.startswith("image/")
+            for item in ordered
+        )
+        if all_images:
+            prompt_seed = caption_text
+            if not prompt_seed:
+                prompt_seed = (
+                    "Describe these images." if len(ordered) > 1 else "Describe this image."
+                )
+        else:
+            prompt_seed = caption_text
+        if prompt_seed and (cfg.files.auto_put_mode == "prompt" or all_images):
             if resolve_prompt is None:
                 try:
                     resolved = cfg.runtime.resolve_message(
-                        text=caption_text,
+                        text=prompt_seed,
                         reply_text=command_msg.reply_to_text,
                         ambient_context=ambient_context,
                         chat_id=command_msg.chat_id,
@@ -90,37 +105,92 @@ async def _handle_media_group(
                     return
             else:
                 resolved = await resolve_prompt(
-                    command_msg, caption_text, ambient_context
+                    command_msg, prompt_seed, ambient_context
                 )
             if resolved is None:
                 return
-            staged_group = await _stage_file_put_group(
+            attachments = None
+            legacy_uploaded_paths = None
+            saved_group = await _save_file_put_group(
                 cfg,
                 command_msg,
+                f".takopi-uploads/telegram/{command_msg.chat_id}/{command_msg.message_id}/",
                 ordered,
+                ambient_context,
+                topic_store,
             )
-            if staged_group is None:
-                return
-            if not staged_group.staged:
-                failure_text = _format_file_put_failures(staged_group.failed)
-                text = "failed to stage files."
+            if saved_group is not None and saved_group.failed:
+                failure_text = _format_file_put_failures(saved_group.failed)
+                text = "failed to upload files."
                 if failure_text is not None:
                     text = f"{text}\n\n{failure_text}"
                 await reply(text=text)
                 return
-            if staged_group.failed:
-                failure_text = _format_file_put_failures(staged_group.failed)
-                if failure_text is not None:
-                    await reply(text=f"some files failed to upload.\n\n{failure_text}")
+            if saved_group is not None and saved_group.saved:
+                try:
+                    run_root = cfg.runtime.resolve_run_cwd(saved_group.context)
+                except ConfigError:
+                    run_root = None
+                documents = [item.document for item in ordered if item.document is not None]
+                built = []
+                for index, result in enumerate(saved_group.saved):
+                    if result.rel_path is None:
+                        continue
+                    document = documents[index] if index < len(documents) else None
+                    mime_type = document.mime_type if document is not None else None
+                    kind = (
+                        "image"
+                        if mime_type is not None and mime_type.startswith("image/")
+                        else "document"
+                    )
+                    built.append(
+                        PromptAttachment(
+                            kind=kind,
+                            path=(run_root / result.rel_path) if run_root is not None else result.rel_path,
+                            mime_type=mime_type,
+                        )
+                    )
+                if built:
+                    attachments = tuple(built)
+                    if all(item.kind != "image" for item in attachments):
+                        legacy_uploaded_paths = [
+                            result.rel_path.as_posix()
+                            for result in saved_group.saved
+                            if result.rel_path is not None
+                        ]
+            if attachments is None:
+                staged_group = await _stage_file_put_group(
+                    cfg,
+                    command_msg,
+                    ordered,
+                )
+                if staged_group is None:
+                    return
+                if not staged_group.staged:
+                    failure_text = _format_file_put_failures(staged_group.failed)
+                    text = "failed to stage files."
+                    if failure_text is not None:
+                        text = f"{text}\n\n{failure_text}"
+                    await reply(text=text)
+                    return
+                if staged_group.failed:
+                    failure_text = _format_file_put_failures(staged_group.failed)
+                    if failure_text is not None:
+                        await reply(text=f"some files failed to upload.\n\n{failure_text}")
+                attachments = tuple(item.attachment for item in staged_group.staged)
             if run_prompt is None:
                 await reply(text=FILE_PUT_USAGE)
                 return
-            prompt = format_attachment_block(
-                [item.attachment for item in staged_group.staged],
-                user_prompt=resolved.prompt,
-            )
-            if resolved.prompt and resolved.prompt.strip():
-                prompt = f"{resolved.prompt}\n\n{prompt}" if prompt else resolved.prompt
+            if legacy_uploaded_paths is not None:
+                uploaded = "\n".join(f"- {path}" for path in legacy_uploaded_paths)
+                prompt = f"{resolved.prompt}\n\n[uploaded files]\n{uploaded}"
+            else:
+                prompt = format_attachment_block(
+                    attachments,
+                    user_prompt=resolved.prompt,
+                )
+                if resolved.prompt and resolved.prompt.strip():
+                    prompt = f"{resolved.prompt}\n\n{prompt}" if prompt else resolved.prompt
             await run_prompt(
                 command_msg,
                 prompt,
@@ -130,7 +200,7 @@ async def _handle_media_group(
                     engine_override=resolved.engine_override,
                     context=resolved.context,
                     context_source=resolved.context_source,
-                    attachments=tuple(item.attachment for item in staged_group.staged),
+                    attachments=attachments,
                 ),
             )
             return

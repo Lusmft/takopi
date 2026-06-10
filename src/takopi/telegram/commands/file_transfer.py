@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 import tempfile
+import time
 import uuid
 from typing import TYPE_CHECKING
 
@@ -36,6 +39,54 @@ if TYPE_CHECKING:
 
 FILE_PUT_USAGE = "usage: `/file put <path>`"
 FILE_GET_USAGE = "usage: `/file get <path>`"
+
+PROMPT_UPLOADS_DIR = ".takopi-uploads"
+PROMPT_UPLOADS_TTL_S = 72 * 60 * 60
+
+
+def _is_prompt_upload_path(rel_path: Path) -> bool:
+    return bool(rel_path.parts) and rel_path.parts[0] == PROMPT_UPLOADS_DIR
+
+
+def _ensure_prompt_uploads_gitignore(run_root: Path) -> None:
+    gitignore = run_root / ".gitignore"
+    marker = "/.takopi-uploads/"
+    existing = ""
+    with suppress(OSError):
+        existing = gitignore.read_text()
+    if marker in existing:
+        return
+    prefix = "" if not existing or existing.endswith("\n") else "\n"
+    gitignore.parent.mkdir(parents=True, exist_ok=True)
+    gitignore.write_text(f"{existing}{prefix}{marker}\n")
+
+
+def _cleanup_prompt_uploads(run_root: Path, *, now: float | None = None) -> None:
+    uploads_root = run_root / PROMPT_UPLOADS_DIR
+    if not uploads_root.exists():
+        return
+    cutoff = (time.time() if now is None else now) - PROMPT_UPLOADS_TTL_S
+    for file_path in sorted(uploads_root.rglob("*"), reverse=True):
+        with suppress(OSError):
+            stat = file_path.stat()
+            if stat.st_mtime >= cutoff:
+                continue
+            if file_path.is_dir():
+                shutil.rmtree(file_path, ignore_errors=True)
+            else:
+                file_path.unlink()
+    for dir_path in sorted(uploads_root.rglob("*"), reverse=True):
+        if not dir_path.is_dir():
+            continue
+        try:
+            next(dir_path.iterdir())
+            continue
+        except StopIteration:
+            pass
+        except OSError:
+            continue
+        with suppress(OSError):
+            dir_path.rmdir()
 
 
 @dataclass(slots=True)
@@ -270,6 +321,9 @@ async def _save_document_payload(
                 size=None,
                 error="file already exists; use --force to overwrite.",
             )
+    if _is_prompt_upload_path(resolved_path):
+        _ensure_prompt_uploads_gitignore(run_root)
+        _cleanup_prompt_uploads(run_root)
     payload = await cfg.bot.download_file(file_path)
     if payload is None:
         return _FilePutResult(

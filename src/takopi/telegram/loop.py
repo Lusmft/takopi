@@ -45,6 +45,7 @@ from .commands.handlers import (
     parse_slash_command,
     get_reserved_commands,
     run_engine,
+    save_file_put,
     stage_file_put,
     set_command_menu,
     should_show_resume_line,
@@ -61,7 +62,11 @@ from .topics import (
     _validate_topics_setup,
 )
 from .client import poll_incoming
-from .channel_bridge import forward_to_channel, run_reply_server
+from .channel_bridge import (
+    forward_to_channel,
+    handle_live_progress_choice,
+    run_reply_server,
+)
 from .chat_prefs import ChatPrefsStore, resolve_prefs_path
 from .chat_sessions import ChatSessionStore, resolve_sessions_path
 from .engine_overrides import merge_overrides
@@ -1574,16 +1579,52 @@ async def run_main_loop(
                 )
                 if resolved is None:
                     return
-                staged = await stage_file_put(
+                staged = None
+                save_path = ""
+                if msg.document is not None:
+                    mime_type = msg.document.mime_type
+                    if mime_type is not None and mime_type.startswith("image/"):
+                        save_path = f".takopi-uploads/telegram/{msg.chat_id}/{msg.message_id}/"
+                save_context = resolved.context or ambient_context
+                saved = await save_file_put(
                     cfg,
                     msg,
+                    save_path,
+                    save_context,
+                    topic_store,
                 )
+                saved_prompt_path = None
+                if saved is not None:
+                    run_root = cfg.runtime.resolve_run_cwd(saved.context)
+                    if run_root is not None and msg.document is not None:
+                        mime_type = msg.document.mime_type
+                        kind = (
+                            "image"
+                            if mime_type is not None and mime_type.startswith("image/")
+                            else "document"
+                        )
+                        attachment = PromptAttachment(
+                            kind=kind,
+                            path=run_root / saved.rel_path,
+                            mime_type=mime_type,
+                        )
+                        staged = type("_SavedPromptUpload", (), {"attachment": attachment})()
+                        if kind != "image":
+                            saved_prompt_path = saved.rel_path.as_posix()
+                if staged is None:
+                    staged = await stage_file_put(
+                        cfg,
+                        msg,
+                    )
                 if staged is None:
                     return
-                prompt = _build_attachment_prompt(
-                    resolved.prompt,
-                    [staged.attachment],
-                )
+                if saved_prompt_path is not None:
+                    prompt = f"{resolved.prompt}\\n\\n[uploaded file: {saved_prompt_path}]"
+                else:
+                    prompt = _build_attachment_prompt(
+                        resolved.prompt,
+                        [staged.attachment],
+                    )
                 await run_prompt_from_upload(
                     msg,
                     prompt,
@@ -1664,6 +1705,14 @@ async def run_main_loop(
                 reply = make_reply(cfg, msg)
                 classification = _classify_message(msg, files_enabled=cfg.files.enabled)
                 text = classification.text
+                if await handle_live_progress_choice(
+                    cfg,
+                    chat_id=msg.chat_id,
+                    reply_to_message_id=msg.reply_to_message_id,
+                    text=text,
+                    reply=reply,
+                ):
+                    return
                 is_voice_transcribed = False
                 if classification.is_forward_candidate:
                     forward_coalescer.attach_forward(msg)
@@ -1803,7 +1852,16 @@ async def run_main_loop(
                             msg.document.mime_type is not None
                             and msg.document.mime_type.startswith("image/")
                         )
-                        if caption_text and (cfg.files.auto_put_mode == "prompt" or is_image_upload):
+                        if is_image_upload:
+                            prompt_text = caption_text or "Describe this image."
+                            tg.start_soon(
+                                handle_prompt_upload,
+                                msg,
+                                prompt_text,
+                                ambient_context,
+                                state.topic_store,
+                            )
+                        elif caption_text and cfg.files.auto_put_mode == "prompt":
                             tg.start_soon(
                                 handle_prompt_upload,
                                 msg,
