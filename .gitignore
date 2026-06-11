@@ -11,3 +11,5 @@ mutants/
 research/
 _site/
 docs/reference/changelog.md
+
+channel-server/node_modules/
