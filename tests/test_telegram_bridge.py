@@ -418,6 +418,29 @@ def test_format_usage_overlay_keeps_bullets_after_telegram_render() -> None:
     assert "- Total cost: $2.99" not in rendered
 
 
+def test_format_status_overlay_for_telegram_wraps_fields() -> None:
+    raw = textwrap.dedent(
+        """
+        Settings  Status   Config   Usage   Stats
+        Version:          2.1.173
+        Session name:     /rename to add a name
+        Model:            Default (Opus 4.8 with 1M context · Best for everyday,
+                          complex tasks)
+        MCP servers:      1 connected, 1 failed · /mcp
+        Esc to cancel
+        """
+    )
+
+    text = telegram_channel_bridge._format_status_overlay_for_telegram(raw)
+
+    assert "Settings  Status" not in text
+    assert "· Version: 2.1.173" in text
+    assert "· Session name: /rename to add a name" in text
+    assert "· Model: Default (Opus 4.8 with 1M context" in text
+    assert "complex tasks)" in text
+    assert "· MCP servers: 1 connected, 1 failed · /mcp" in text
+
+
 def test_format_model_overlay_for_telegram_lists_options() -> None:
     raw = textwrap.dedent(
         """

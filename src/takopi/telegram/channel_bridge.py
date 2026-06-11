@@ -111,6 +111,12 @@ def _tmux_send_choice(session: str, choice: str) -> bool:
 
 
 def _tmux_send_slash_command(session: str, command: str) -> bool:
+    subprocess.run(
+        ["tmux", "resize-window", "-t", session, "-x", "140", "-y", "50"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     proc = subprocess.run(
         ["tmux", "send-keys", "-t", session, "C-u", command, "Enter"],
         check=False,
@@ -228,6 +234,8 @@ def _format_channel_slash_result(command: str, text: str) -> str:
         body = "Claude Code returned an empty response."
     elif command == "/usage":
         body = _format_usage_overlay_for_telegram(body)
+    elif command == "/status":
+        body = _format_status_overlay_for_telegram(body)
     return f"Claude Code {command}:\n\n{body}"
 
 
@@ -360,6 +368,26 @@ def _format_usage_overlay_for_telegram(text: str) -> str:
             continue
         if ":" in line:
             lines.append(f"{_TELEGRAM_BULLET} {line}")
+            continue
+        lines.append(line)
+    return "  \n".join(lines).strip() or text.strip()
+
+
+def _format_status_overlay_for_telegram(text: str) -> str:
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = re.sub(r"\s+", " ", raw.strip())
+        if not line:
+            continue
+        if "Settings Status Config Usage Stats" in line:
+            continue
+        if "dialog dismissed" in line or "Esc to cancel" in line:
+            continue
+        if ":" in line:
+            lines.append(f"{_TELEGRAM_BULLET} {line}")
+            continue
+        if lines and lines[-1].startswith(f"{_TELEGRAM_BULLET} "):
+            lines[-1] = f"{lines[-1]} {line}"
             continue
         lines.append(line)
     return "  \n".join(lines).strip() or text.strip()
