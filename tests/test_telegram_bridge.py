@@ -463,6 +463,7 @@ def test_format_stats_overlay_for_telegram_splits_metrics() -> None:
     text = telegram_channel_bridge._format_stats_overlay_for_telegram(raw)
 
     assert "Settings  Status" not in text
+    assert text.startswith("```text\n")
     assert "Overview Models" in text
     assert "Mon ·······▒▒▓█" in text
     assert "Less ░ ▒ ▓ █ More" in text
@@ -472,6 +473,10 @@ def test_format_stats_overlay_for_telegram_splits_metrics() -> None:
     assert "· Longest session: 28d 2h 31m" in text
     assert "· Current streak: 31 days" in text
     assert "ctrl+s" not in text
+
+    rendered, entities = prepare_telegram(MarkdownParts(header=text))
+    assert "Mon ·······▒▒▓█" in rendered
+    assert any(entity.get("type") == "pre" for entity in entities)
 
 
 def test_format_model_overlay_for_telegram_lists_options() -> None:

@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import subprocess
+import textwrap
 import time
 from contextlib import suppress
 from collections.abc import Awaitable, Callable, Sequence
@@ -396,7 +397,8 @@ def _format_status_overlay_for_telegram(text: str) -> str:
 
 
 def _format_stats_overlay_for_telegram(text: str) -> str:
-    lines: list[str] = []
+    graph_lines: list[str] = []
+    detail_lines: list[str] = []
     for raw in text.splitlines():
         stripped = raw.strip()
         if not stripped:
@@ -410,15 +412,23 @@ def _format_stats_overlay_for_telegram(text: str) -> str:
             continue
         parts = [part.strip() for part in re.split(r"\s{2,}", stripped) if part.strip()]
         if len(parts) > 1 and all(":" in part for part in parts):
-            lines.extend(f"{_TELEGRAM_BULLET} {part}" for part in parts)
+            detail_lines.extend(f"{_TELEGRAM_BULLET} {part}" for part in parts)
             continue
         if ":" in normalized and not any(char in normalized for char in "░▒▓█"):
-            lines.append(f"{_TELEGRAM_BULLET} {normalized}")
+            detail_lines.append(f"{_TELEGRAM_BULLET} {normalized}")
             continue
         if any(char in normalized for char in "░▒▓█") or "··" in normalized:
-            lines.append(raw.rstrip())
+            graph_lines.append(raw.rstrip())
             continue
-        lines.append(normalized)
+        if normalized.startswith(("You've used ", "Your ")):
+            detail_lines.append(normalized)
+            continue
+        graph_lines.append(normalized)
+    lines: list[str] = []
+    if graph_lines:
+        graph = textwrap.dedent("\n".join(graph_lines)).strip("\n")
+        lines.append(f"```text\n{graph}\n```")
+    lines.extend(detail_lines)
     return "  \n".join(lines).strip() or text.strip()
 
 
