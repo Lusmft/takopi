@@ -183,6 +183,20 @@ def _shorten_live_progress(text: str, *, width: int = 180) -> str:
     return f"{collapsed[: width - 1]}…"
 
 
+def _bash_live_progress_title(command: str) -> tuple[str, bool]:
+    collapsed = re.sub(r"\s+", " ", command.strip())
+    heading = re.search(r"echo\s+([\"'])={2,}\s*(?P<title>.+?)\s*={2,}\1", collapsed)
+    if heading is not None:
+        return _shorten_live_progress(heading.group("title"), width=120), True
+    title = re.match(
+        r"(?P<title>git\s+(?:pull|fetch|status|diff|log|rev-list|branch|tag|remote|ls-remote)\b[^;&|]*)",
+        collapsed,
+    )
+    if title is not None:
+        return _shorten_live_progress(title.group("title"), width=120), True
+    return _shorten_live_progress(collapsed, width=140), False
+
+
 def _format_live_tool_line(text: str) -> str | None:
     if "⎿" in text:
         before, after = text.split("⎿", 1)
@@ -201,6 +215,9 @@ def _format_live_tool_line(text: str) -> str | None:
     kind = match.group("kind")
     body = _shorten_live_progress(match.group("body").strip())
     if kind == "Bash":
+        body, readable = _bash_live_progress_title(match.group("body"))
+        if readable:
+            return f"{_TELEGRAM_BULLET} Bash: {body}"
         body = body.replace("`", "\'")
         return f"{_TELEGRAM_BULLET} Bash: `{body}`"
     return f"{_TELEGRAM_BULLET} {kind}: {body}"

@@ -331,9 +331,9 @@ def test_extract_live_progress_text_formats_tool_calls() -> None:
 
     text = telegram_channel_bridge._extract_live_progress_text(pane)
 
-    assert '· Bash: `echo "=== git pull ===" && git pull' in text
+    assert "· Bash: git pull" in text
     assert "↳ waiting for permission" in text
-    assert "· Bash: `echo \"=== recent commit dates ===\"" in text
+    assert "· Bash: recent commit dates" in text
     assert "↳ === recent commit dates ===" in text
     assert "↻ Newspapering" in text
 
@@ -361,7 +361,7 @@ def test_extract_live_progress_text_hides_permission_overlay() -> None:
 
     text = telegram_channel_bridge._extract_live_progress_text(pane)
 
-    assert "· Bash:" in text
+    assert "· Bash: HEAD vs latest QA tag RC-v1.23.13-11" in text
     assert "↳ waiting for permission" in text
     assert "Bash command" not in text
     assert "Do you want to proceed" not in text
