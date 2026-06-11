@@ -67,6 +67,7 @@ from .channel_bridge import (
     channel_bridge_slash_command_text,
     channel_bridge_status_text,
     forward_to_channel,
+    handle_live_progress_callback_choice,
     handle_live_progress_choice,
     run_reply_server,
 )
@@ -2135,6 +2136,8 @@ async def run_main_loop(
                                 else:
                                     state.recent_media_groups.pop(media_key, None)
                 if isinstance(update, TelegramCallbackQuery):
+                    if await handle_live_progress_callback_choice(cfg, update):
+                        return
                     if update.data == CANCEL_CALLBACK_DATA:
                         tg.start_soon(
                             handle_callback_cancel,

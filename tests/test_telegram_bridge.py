@@ -788,6 +788,73 @@ def test_live_progress_choice_sends_tmux_choice(monkeypatch):
     assert replies == ["sent permission choice `2` to Claude."]
 
 
+def test_render_live_progress_adds_permission_buttons() -> None:
+    rendered = telegram_channel_bridge._render_live_progress(
+        text="· Bash: Read file\n  ↳ waiting for permission",
+        elapsed_s=3,
+        status="working",
+        engine="claude",
+    )
+
+    keyboard = rendered.extra["reply_markup"]["inline_keyboard"]
+    assert [button["text"] for button in keyboard[0]] == ["Yes", "Always", "No"]
+    assert [button["callback_data"] for button in keyboard[0]] == [
+        "takopi:perm:1",
+        "takopi:perm:2",
+        "takopi:perm:3",
+    ]
+
+
+def test_live_progress_callback_sends_tmux_choice(monkeypatch):
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS.clear()
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS.clear()
+    run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=telegram_channel_bridge.MessageRef(channel_id=123, message_id=10),
+        started_at=0,
+    )
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS[(123, 1)] = run
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS[(123, 10)] = (123, 1)
+    sent: list[tuple[str, str]] = []
+    answers: list[tuple[str, str | None]] = []
+    pane = textwrap.dedent(
+        """
+        ← takopi: prompt
+        Do you want to proceed?
+        1. Yes
+        2. Yes, allow reading from uploads/ during this session
+        3. No
+        """
+    )
+
+    async def answer_callback_query(callback_query_id, text=None, **_kwargs):
+        answers.append((callback_query_id, text))
+        return True
+
+    cfg = SimpleNamespace(
+        channel_bridge=SimpleNamespace(tmux_session="sess"),
+        bot=SimpleNamespace(answer_callback_query=answer_callback_query),
+    )
+    query = SimpleNamespace(
+        data="takopi:perm:2",
+        chat_id=123,
+        message_id=10,
+        callback_query_id="cb1",
+    )
+
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_capture", lambda session: pane)
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_choice",
+        lambda session, choice: sent.append((session, choice)) or True,
+    )
+
+    handled = asyncio.run(telegram_channel_bridge.handle_live_progress_callback_choice(cfg, query))
+
+    assert handled is True
+    assert sent == [("sess", "2")]
+    assert answers == [("cb1", "sent permission choice 2 to Claude.")]
+
+
 def test_telegram_presenter_split_overflow_adds_followups() -> None:
     presenter = TelegramPresenter(message_overflow="split")
     state = ProgressTracker(engine="codex").snapshot()

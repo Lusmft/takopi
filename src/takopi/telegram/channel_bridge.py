@@ -23,7 +23,7 @@ from ..runners.claude import (
     _slash_segment_after_latest_prompt,
 )
 from ..transport import MessageRef, RenderedMessage, SendOptions
-from .bridge import TelegramBridgeConfig, send_plain
+from .bridge import CLEAR_MARKUP, TelegramBridgeConfig, send_plain
 from .render import MAX_BODY_CHARS, prepare_telegram, prepare_telegram_multi
 
 logger = get_logger(__name__)
@@ -32,6 +32,16 @@ _MAX_LIVE_PROGRESS_CHARS = min(1600, MAX_BODY_CHARS)
 _CHANNEL_SLASH_COMMANDS = frozenset({"/model", "/stats", "/status", "/usage"})
 _CHANNEL_SLASH_TIMEOUT_S = 12.0
 _TELEGRAM_BULLET = "·"
+_PERMISSION_CALLBACK_PREFIX = "takopi:perm:"
+_PERMISSION_MARKUP = {
+    "inline_keyboard": [
+        [
+            {"text": "Yes", "callback_data": "takopi:perm:1"},
+            {"text": "Always", "callback_data": "takopi:perm:2"},
+            {"text": "No", "callback_data": "takopi:perm:3"},
+        ]
+    ]
+}
 
 
 @dataclass(slots=True)
@@ -86,7 +96,15 @@ def _render_live_progress(
             footer=None,
         )
     )
-    return RenderedMessage(text=rendered_text, extra={"entities": entities})
+    reply_markup = (
+        _PERMISSION_MARKUP
+        if status == "working" and _looks_like_claude_permission_prompt(body)
+        else CLEAR_MARKUP
+    )
+    return RenderedMessage(
+        text=rendered_text,
+        extra={"entities": entities, "reply_markup": reply_markup},
+    )
 
 
 def _tmux_capture(session: str) -> str:
@@ -161,12 +179,20 @@ def _permission_choice(text: str | None) -> str | None:
     return stripped if stripped in {"1", "2", "3"} else None
 
 
+def _permission_callback_choice(data: str | None) -> str | None:
+    if data is None or not data.startswith(_PERMISSION_CALLBACK_PREFIX):
+        return None
+    choice = data.removeprefix(_PERMISSION_CALLBACK_PREFIX)
+    return choice if choice in {"1", "2", "3"} else None
+
+
 def _looks_like_claude_permission_prompt(text: str) -> bool:
     normalized = text.lower()
     return (
         "do you want to proceed" in normalized
         or "allow reading from" in normalized
         or "yes, allow" in normalized
+        or "waiting for permission" in normalized
     )
 
 
@@ -694,6 +720,43 @@ async def _pop_live_progress(chat_id: int, user_msg_id: int) -> LiveProgressRun 
         return run
 
 
+async def _live_progress_run_for_message(chat_id: int, message_id: int) -> LiveProgressRun | None:
+    async with _LIVE_PROGRESS_LOCK:
+        source_key = _LIVE_PROGRESS_BY_PROGRESS.get((chat_id, message_id))
+        return _LIVE_PROGRESS_RUNS.get(source_key) if source_key is not None else None
+
+
+async def _send_live_progress_choice(
+    cfg: TelegramBridgeConfig,
+    *,
+    chat_id: int,
+    progress_message_id: int,
+    choice: str,
+) -> str:
+    run = await _live_progress_run_for_message(chat_id, progress_message_id)
+    if run is None:
+        return "no active Claude run for this button."
+
+    session = cfg.channel_bridge.tmux_session
+    if not session:
+        return "live progress tmux session is not configured."
+
+    pane = await asyncio.to_thread(_tmux_capture, session)
+    progress_text = _extract_live_progress_text(pane)
+    if not (
+        _looks_like_claude_permission_prompt(progress_text)
+        or _looks_like_claude_permission_prompt(pane)
+    ):
+        return "no visible Claude permission prompt to answer."
+
+    sent = await asyncio.to_thread(_tmux_send_choice, session, choice)
+    if not sent:
+        return "failed to send permission choice to Claude tmux session."
+
+    run.last_text = progress_text
+    return f"sent permission choice {choice} to Claude."
+
+
 async def handle_live_progress_choice(
     cfg: TelegramBridgeConfig,
     *,
@@ -706,34 +769,38 @@ async def handle_live_progress_choice(
     if choice is None or reply_to_message_id is None:
         return False
 
-    async with _LIVE_PROGRESS_LOCK:
-        source_key = _LIVE_PROGRESS_BY_PROGRESS.get((chat_id, reply_to_message_id))
-        run = _LIVE_PROGRESS_RUNS.get(source_key) if source_key is not None else None
-
+    run = await _live_progress_run_for_message(chat_id, reply_to_message_id)
     if run is None:
         return False
 
-    session = cfg.channel_bridge.tmux_session
-    if not session:
-        await reply(text="live progress tmux session is not configured.")
-        return True
+    result = await _send_live_progress_choice(
+        cfg,
+        chat_id=chat_id,
+        progress_message_id=reply_to_message_id,
+        choice=choice,
+    )
+    await reply(text=result.replace(f" {choice} ", f" `{choice}` "))
+    return True
 
-    pane = await asyncio.to_thread(_tmux_capture, session)
-    progress_text = _extract_live_progress_text(pane)
-    if not (
-        _looks_like_claude_permission_prompt(progress_text)
-        or _looks_like_claude_permission_prompt(pane)
-    ):
-        await reply(text="no visible Claude permission prompt to answer.")
-        return True
 
-    sent = await asyncio.to_thread(_tmux_send_choice, session, choice)
-    if not sent:
-        await reply(text="failed to send permission choice to Claude tmux session.")
-        return True
+async def handle_live_progress_callback_choice(
+    cfg: TelegramBridgeConfig,
+    query: Any,
+) -> bool:
+    choice = _permission_callback_choice(query.data)
+    if choice is None:
+        return False
 
-    run.last_text = progress_text
-    await reply(text=f"sent permission choice `{choice}` to Claude.")
+    result = await _send_live_progress_choice(
+        cfg,
+        chat_id=query.chat_id,
+        progress_message_id=query.message_id,
+        choice=choice,
+    )
+    await cfg.bot.answer_callback_query(
+        callback_query_id=query.callback_query_id,
+        text=result,
+    )
     return True
 
 
