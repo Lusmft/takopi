@@ -254,7 +254,7 @@ def _format_usage_overlay_for_telegram(text: str) -> str:
             lines.append(f"• {line}")
             continue
         lines.append(line)
-    return "\n".join(lines).strip() or text.strip()
+    return "  \n".join(lines).strip() or text.strip()
 
 
 def _capture_channel_slash_command(session: str, command: str) -> str:
