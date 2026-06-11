@@ -130,6 +130,14 @@ def _tmux_send_keys(session: str, *keys: str) -> bool:
     return proc.returncode == 0
 
 
+def _tmux_send_keys_slow(session: str, *keys: str, delay_s: float = 0.35) -> bool:
+    for key in keys:
+        if not _tmux_send_keys(session, key):
+            return False
+        time.sleep(delay_s)
+    return True
+
+
 def _tmux_send_escape(session: str) -> None:
     subprocess.run(
         ["tmux", "send-keys", "-t", session, "Escape"],
@@ -236,7 +244,8 @@ def _current_model_from_options(options: Sequence[str]) -> str | None:
         return value or None
     return None
 
-def _format_model_overlay_for_telegram(text: str) -> str:
+
+def _model_options_from_overlay(text: str) -> tuple[list[str], str]:
     clean = _normalize_interactive_text(text)
     options: list[str] = []
     effort = ""
@@ -251,7 +260,9 @@ def _format_model_overlay_for_telegram(text: str) -> str:
             continue
         if line.startswith("sessions. For other/previous"):
             continue
-        if "Enter to confirm" in line or "Esc to cancel" in line:
+        if "Enter to confirm" in line or "Enter to set as default" in line:
+            continue
+        if "Esc to cancel" in line or "s to use this session only" in line:
             continue
         option = re.match(r"^(?:❯ )?([1-9])\.\s+(.+)$", line)
         if option is not None:
@@ -266,7 +277,11 @@ def _format_model_overlay_for_telegram(text: str) -> str:
             current = f"{current} {line}"
     if current is not None:
         options.append(current)
+    return options, effort
 
+
+def _format_model_overlay_for_telegram(text: str) -> str:
+    options, effort = _model_options_from_overlay(text)
     current_model = _current_model_from_options(options)
     lines = ["Claude Code model:"]
     if current_model:
@@ -280,6 +295,21 @@ def _format_model_overlay_for_telegram(text: str) -> str:
     lines.append("")
     lines.append("Use `/model 1`, `/model 2`, `/model 3`, or `/model 4`.")
     return "  \n".join(lines).strip()
+
+
+def _current_model_from_overlay(text: str) -> str | None:
+    options, _effort = _model_options_from_overlay(text)
+    return _current_model_from_options(options)
+
+
+def _focused_model_index_from_overlay(text: str) -> int | None:
+    clean = _normalize_interactive_text(text)
+    for raw in clean.splitlines():
+        line = re.sub(r"\s+", " ", raw.strip())
+        option = re.match(r"^❯\s+([1-9])\.\s+", line)
+        if option is not None:
+            return int(option.group(1))
+    return None
 
 
 def _format_usage_overlay_for_telegram(text: str) -> str:
@@ -370,6 +400,18 @@ def _wait_for_model_overlay(session: str) -> str:
     return last_segment
 
 
+def _capture_current_model(session: str) -> str | None:
+    if not _tmux_send_slash_command(session, "/model"):
+        return None
+    segment = _wait_for_model_overlay(session)
+    try:
+        if "Select model" not in segment:
+            return None
+        return _current_model_from_overlay(segment)
+    finally:
+        _tmux_send_escape(session)
+
+
 def _capture_channel_model_command(session: str, selection: str | None) -> str:
     sent = _tmux_send_slash_command(session, "/model")
     if not sent:
@@ -388,9 +430,16 @@ def _capture_channel_model_command(session: str, selection: str | None) -> str:
         _tmux_send_escape(session)
         return "usage: `/model`, `/model 1`, `/model 2`, `/model 3`, or `/model 4`"
 
-    moves = ["Down"] * (int(selection) - 1)
-    _tmux_send_keys(session, *moves, "Enter")
-    deadline = time.time() + 5.0
+    focused_index = _focused_model_index_from_overlay(segment) or 1
+    target_index = int(selection)
+    offset = target_index - focused_index
+    moves = ["Down"] * offset if offset > 0 else ["Up"] * abs(offset)
+    # Use "s" so Telegram changes the live session without overwriting the
+    # user's default Claude Code model for future sessions.
+    time.sleep(0.2)
+    _tmux_send_keys_slow(session, *moves, "s")
+    status_line = ""
+    deadline = time.time() + 8.0
     while time.time() < deadline:
         pane = _tmux_capture(session)
         segment = _slash_segment_after_latest_prompt("/model", pane) or pane
@@ -399,15 +448,21 @@ def _capture_channel_model_command(session: str, selection: str | None) -> str:
             line = raw.strip()
             lowered = line.lower()
             if "model as" in lowered or "switched model" in lowered or "set model" in lowered:
-                return f"Claude Code /model:\n\n{line.lstrip('⎿ ').strip()}"
+                status_line = line.lstrip("⎿ ").strip()
+                break
+        if status_line:
+            break
         time.sleep(0.5)
-    clean = _normalize_interactive_text(_tmux_capture(session))
-    for raw in reversed(clean.splitlines()):
-        line = raw.strip()
-        lowered = line.lower()
-        if "model as" in lowered or "switched model" in lowered or "set model" in lowered:
-            return f"Claude Code /model:\n\n{line.lstrip('⎿ ').strip()}"
-    return f"Claude Code /model:\n\nselected option {selection}."
+    if status_line:
+        return f"Claude Code /model:\n\n{status_line}"
+    if selection == "1":
+        current_model = _capture_current_model(session)
+        if current_model is not None:
+            return f"Claude Code /model:\n\nCurrent: {current_model}"
+    return (
+        "Claude Code /model:\n\n"
+        f"Could not confirm that option {selection} changed the active model."
+    )
 
 
 

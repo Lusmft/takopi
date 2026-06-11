@@ -447,6 +447,71 @@ def test_format_model_overlay_for_telegram_lists_options() -> None:
     assert "Use `/model 1`, `/model 2`, `/model 3`, or `/model 4`." in text
 
 
+def test_capture_channel_model_command_confirms_current_model(monkeypatch) -> None:
+    raw_before = textwrap.dedent(
+        """
+        Select model
+        ❯ 1. Default (recommended) ✔  Opus 4.8 with 1M context
+          2. Fable                    Fable 5
+          3. Sonnet                   Sonnet 4.6
+          4. Haiku                    Haiku 4.5
+        """
+    )
+    sent_keys: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_send_slash_command", lambda *_: True)
+    monkeypatch.setattr(telegram_channel_bridge, "_wait_for_model_overlay", lambda *_: raw_before)
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_keys_slow",
+        lambda _session, *keys: sent_keys.append(keys) or True,
+    )
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_capture",
+        lambda _session: "❯ /model\n  ⎿  Set model to Fable 5 for this session",
+    )
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_send_escape", lambda *_: None)
+
+    text = telegram_channel_bridge._capture_channel_model_command("sess", "2")
+
+    assert sent_keys == [("Down", "s")]
+    assert "Set model to Fable 5 for this session" in text
+    assert "selected option 2" not in text
+
+
+def test_capture_channel_model_command_moves_from_current_cursor(monkeypatch) -> None:
+    raw_before = textwrap.dedent(
+        """
+        Select model
+          1. Default (recommended)    Opus 4.8 with 1M context
+          2. Fable                    Fable 5
+        ❯ 3. Sonnet                ✔  Sonnet 4.6
+          4. Haiku                    Haiku 4.5
+        """
+    )
+    sent_keys: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_send_slash_command", lambda *_: True)
+    monkeypatch.setattr(telegram_channel_bridge, "_wait_for_model_overlay", lambda *_: raw_before)
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_keys_slow",
+        lambda _session, *keys: sent_keys.append(keys) or True,
+    )
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_capture",
+        lambda _session: "❯ /model\n  ⎿  Set model to Opus 4.8 for this session",
+    )
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_send_escape", lambda *_: None)
+
+    text = telegram_channel_bridge._capture_channel_model_command("sess", "1")
+
+    assert sent_keys == [("Up", "Up", "s")]
+    assert "Set model to Opus 4.8 for this session" in text
+
+
 @pytest.mark.anyio
 async def test_verbose_actions_send_new_lines_only() -> None:
     transport = FakeTransport()
