@@ -176,6 +176,51 @@ def _latest_takopi_segment(pane: str) -> str:
     return pane[idx:] if idx >= 0 else pane
 
 
+def _shorten_live_progress(text: str, *, width: int = 180) -> str:
+    collapsed = re.sub(r"\s+", " ", text.strip())
+    if len(collapsed) <= width:
+        return collapsed
+    return f"{collapsed[: width - 1]}…"
+
+
+def _format_live_tool_line(text: str) -> str | None:
+    if "⎿" in text:
+        before, after = text.split("⎿", 1)
+        tool = _format_live_tool_line(before)
+        result = _format_live_tool_result(after)
+        if tool and result:
+            return f"{tool}\n{result}"
+        return tool or result
+
+    match = re.match(r"^(?P<kind>[A-Za-z][A-Za-z0-9_]*)\((?P<body>.*)\)$", text)
+    if match is None:
+        return None
+
+    kind = match.group("kind")
+    body = _shorten_live_progress(match.group("body").strip())
+    if kind == "Bash":
+        body = body.replace("`", "\'")
+        return f"{_TELEGRAM_BULLET} Bash: `{body}`"
+    return f"{_TELEGRAM_BULLET} {kind}: {body}"
+
+
+def _format_live_tool_result(text: str) -> str:
+    body = _shorten_live_progress(text)
+    lowered = body.lower()
+    if "waiting" in lowered or "do you want to proceed" in lowered:
+        return "  ↳ waiting for permission"
+    return f"  ↳ {body}"
+
+
+def _format_live_progress_line(text: str) -> list[str]:
+    formatted_tool = _format_live_tool_line(text)
+    if formatted_tool is not None:
+        return formatted_tool.splitlines()
+    if text.startswith("⎿"):
+        return [_format_live_tool_result(text[1:])]
+    return [_shorten_live_progress(text)]
+
+
 def _extract_live_progress_text(pane: str) -> str:
     clean = _normalize_interactive_text(_latest_takopi_segment(pane))
     lines: list[str] = []
@@ -200,13 +245,13 @@ def _extract_live_progress_text(pane: str) -> str:
             continue
         if s.startswith(("●", "⏺")):
             body = re.sub(r"^[●⏺]\s*", "", s)
-            lines.append(body)
+            lines.extend(_format_live_progress_line(body))
             continue
         if s.startswith("✻"):
             body = re.sub(r"^✻\s*", "", s)
             lines.append(f"↻ {body}")
             continue
-        lines.append(s)
+        lines.extend(_format_live_progress_line(s))
     if not lines:
         return "↻ Working…"
     return "\n".join(lines[-12:])

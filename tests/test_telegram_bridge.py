@@ -300,7 +300,7 @@ def test_extract_live_progress_text_filters_prompt_chrome() -> None:
     pane = """← takopi: привет
 
 ● Bash(pwd)
-⎿ /root/usegateway
+  ⎿ /root/usegateway
 
 ✻ Worked for 3s
 
@@ -310,9 +310,32 @@ gh auth login
 
     text = telegram_channel_bridge._extract_live_progress_text(pane)
 
-    assert "Bash(pwd)" in text
+    assert "· Bash: `pwd`" in text
     assert "Worked for 3s" in text
     assert "gh auth login" not in text
+
+
+def test_extract_live_progress_text_formats_tool_calls() -> None:
+    pane = '''← takopi: Сделай гит пулл
+
+● Bash(echo "=== git pull ===" && git pull 2>&1 | head -40 && echo "=== status ===" && git status -s)
+  ⎿  Waiting…
+
+● Bash(echo "=== recent commit dates ===" && git log -10 --format="%h %ci %s")
+  ⎿  === recent commit dates ===
+
+✻ Newspapering… (10s · ↑ 399 tokens)
+
+❯
+'''
+
+    text = telegram_channel_bridge._extract_live_progress_text(pane)
+
+    assert '· Bash: `echo "=== git pull ===" && git pull' in text
+    assert "↳ waiting for permission" in text
+    assert "· Bash: `echo \"=== recent commit dates ===\"" in text
+    assert "↳ === recent commit dates ===" in text
+    assert "↻ Newspapering" in text
 
 
 def test_extract_live_progress_text_filters_claude_feedback_prompt() -> None:
