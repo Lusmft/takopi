@@ -338,6 +338,37 @@ def test_extract_live_progress_text_formats_tool_calls() -> None:
     assert "↻ Newspapering" in text
 
 
+def test_extract_live_progress_text_hides_permission_overlay() -> None:
+    pane = '''← takopi: в каком состоянии сейчас проект?
+
+● Bash(echo "=== HEAD vs latest QA tag RC-v1.23.13-11 ===" && git rev-list --left-right --count RC-v1.23.13-11...HEAD 2>&1 && echo "(left=in
+      QA tag not in HEAD, right=…)
+  ⎿  Waiting…
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   echo "=== HEAD vs latest QA tag RC-v1.23.13-11 ===" && git rev-list --left-right --count RC-v1.23.13-11...HEAD 2>&1
+   Compare HEAD with QA release tag
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don’t ask again for: git rev-list *
+   3. No
+
+ Esc to cancel · Tab to amend · ctrl+e to explain
+'''
+
+    text = telegram_channel_bridge._extract_live_progress_text(pane)
+
+    assert "· Bash:" in text
+    assert "↳ waiting for permission" in text
+    assert "Bash command" not in text
+    assert "Do you want to proceed" not in text
+    assert "Compare HEAD with QA release tag" not in text
+    assert "QA tag not in HEAD" not in text
+
+
 def test_extract_live_progress_text_filters_claude_feedback_prompt() -> None:
     pane = """← takopi: Сделай гит пулл
 

@@ -194,6 +194,8 @@ def _format_live_tool_line(text: str) -> str | None:
 
     match = re.match(r"^(?P<kind>[A-Za-z][A-Za-z0-9_]*)\((?P<body>.*)\)$", text)
     if match is None:
+        match = re.match(r"^(?P<kind>[A-Za-z][A-Za-z0-9_]*)\((?P<body>.*)$", text)
+    if match is None:
         return None
 
     kind = match.group("kind")
@@ -221,9 +223,24 @@ def _format_live_progress_line(text: str) -> list[str]:
     return [_shorten_live_progress(text)]
 
 
+def _is_wrapped_tool_start(text: str) -> bool:
+    return bool(re.match(r"^[A-Za-z][A-Za-z0-9_]*\(.", text)) and ")" not in text
+
+
+def _is_permission_overlay_line(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        text == "Bash command"
+        or "do you want to proceed" in lowered
+        or lowered.startswith("esc to cancel")
+        or re.match(r"^[❯ ]*[123]\.\s+", text) is not None
+    )
+
+
 def _extract_live_progress_text(pane: str) -> str:
     clean = _normalize_interactive_text(_latest_takopi_segment(pane))
     lines: list[str] = []
+    skip_wrapped_tool_continuation = False
     for raw in clean.splitlines():
         s = raw.strip()
         if not s:
@@ -243,15 +260,26 @@ def _extract_live_progress_text(pane: str) -> str:
             continue
         if "composing…" in lowered or "composing..." in lowered:
             continue
+        if _is_permission_overlay_line(s):
+            break
+        if skip_wrapped_tool_continuation and not s.startswith(("⎿", "●", "⏺", "✻")):
+            continue
         if s.startswith(("●", "⏺")):
             body = re.sub(r"^[●⏺]\s*", "", s)
             lines.extend(_format_live_progress_line(body))
+            skip_wrapped_tool_continuation = _is_wrapped_tool_start(body)
+            continue
+        if s.startswith("⎿"):
+            lines.extend(_format_live_progress_line(s))
+            skip_wrapped_tool_continuation = False
             continue
         if s.startswith("✻"):
             body = re.sub(r"^✻\s*", "", s)
             lines.append(f"↻ {body}")
+            skip_wrapped_tool_continuation = False
             continue
         lines.extend(_format_live_progress_line(s))
+        skip_wrapped_tool_continuation = _is_wrapped_tool_start(s)
     if not lines:
         return "↻ Working…"
     return "\n".join(lines[-12:])
@@ -675,7 +703,10 @@ async def handle_live_progress_choice(
 
     pane = await asyncio.to_thread(_tmux_capture, session)
     progress_text = _extract_live_progress_text(pane)
-    if not _looks_like_claude_permission_prompt(progress_text):
+    if not (
+        _looks_like_claude_permission_prompt(progress_text)
+        or _looks_like_claude_permission_prompt(pane)
+    ):
         await reply(text="no visible Claude permission prompt to answer.")
         return True
 
