@@ -199,7 +199,62 @@ def _format_channel_slash_result(command: str, text: str) -> str:
     body = text.strip()
     if not body:
         body = "Claude Code returned an empty response."
+    elif command == "/usage":
+        body = _format_usage_overlay_for_telegram(body)
     return f"Claude Code {command}:\n\n{body}"
+
+
+def _format_usage_overlay_for_telegram(text: str) -> str:
+    section_names = {
+        "Session",
+        "Usage by model:",
+        "Current session",
+        "Current week (all models)",
+        "Current week (Sonnet only)",
+        "Extra usage",
+    }
+    lines: list[str] = []
+    current_section = ""
+    sections_with_usage_bar: set[str] = set()
+    for raw in text.splitlines():
+        line = re.sub(r"\s+", " ", raw.strip())
+        if not line:
+            continue
+        if "Settings Status Config Usage Stats" in line:
+            continue
+        if line == "Refreshing…":
+            continue
+        if line.startswith("Refresh"):
+            continue
+        if re.fullmatch(r"\d{1,2}:\d{2}(?:am|pm) \(UTC\)", line):
+            continue
+        if line.startswith("Rese") and not line.startswith("Resets "):
+            continue
+        if re.fullmatch(r"[█▌▐▛▜▝▘ ]+\d*", line):
+            continue
+        if line in section_names:
+            current_section = line.rstrip(":")
+            if lines:
+                lines.append("")
+            lines.append(current_section)
+            continue
+        if re.match(r"^(?:[█▌▐▛▜▝▘ ]+ )?\d+% used$", line):
+            if current_section in sections_with_usage_bar:
+                continue
+            sections_with_usage_bar.add(current_section)
+            lines.append(line)
+            continue
+        if line.startswith("Resets ") or "not enabled" in line:
+            lines.append(line)
+            continue
+        if current_section == "Usage by model" and lines and lines[-1].startswith("- "):
+            lines[-1] = f"{lines[-1]} {line}"
+            continue
+        if ":" in line:
+            lines.append(f"- {line}")
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip() or text.strip()
 
 
 def _capture_channel_slash_command(session: str, command: str) -> str:
