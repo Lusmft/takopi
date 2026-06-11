@@ -32,6 +32,7 @@ _MAX_LIVE_PROGRESS_CHARS = min(1600, MAX_BODY_CHARS)
 _CHANNEL_SLASH_COMMANDS = frozenset({"/model", "/stats", "/status", "/usage"})
 _CHANNEL_SLASH_TIMEOUT_S = 12.0
 _TELEGRAM_BULLET = "·"
+_PERMISSION_BUTTON_DELAY_S = 2.0
 _PERMISSION_CALLBACK_PREFIX = "takopi:perm:"
 _PERMISSION_MARKUP = {
     "inline_keyboard": [
@@ -54,6 +55,8 @@ class LiveProgressRun:
     verbose: bool = False
     done: asyncio.Event = field(default_factory=asyncio.Event)
     last_text: str = ""
+    permission_seen_at: float | None = None
+    permission_controls_visible: bool = False
     verbose_seen: set[str] = field(default_factory=set)
     verbose_sent: int = 0
     superseded: bool = False
@@ -86,6 +89,7 @@ def _render_live_progress(
     elapsed_s: float,
     status: str,
     engine: str = "claude",
+    permission_controls: bool = False,
 ) -> RenderedMessage:
     body = text.strip() or "↻ Working…"
     if len(body) > _MAX_LIVE_PROGRESS_CHARS:
@@ -100,7 +104,7 @@ def _render_live_progress(
     )
     reply_markup = (
         _PERMISSION_MARKUP
-        if status == "working" and _looks_like_claude_permission_prompt(body)
+        if status == "working" and permission_controls
         else CLEAR_MARKUP
     )
     return RenderedMessage(
@@ -814,6 +818,23 @@ async def handle_live_progress_callback_choice(
     return True
 
 
+def _permission_controls_ready(
+    run: LiveProgressRun,
+    *,
+    pane: str,
+    text: str,
+    now: float,
+) -> bool:
+    permission_visible = _looks_like_claude_permission_prompt(pane) and _looks_like_claude_permission_prompt(text)
+    if not permission_visible:
+        run.permission_seen_at = None
+        return False
+    if run.permission_seen_at is None:
+        run.permission_seen_at = now
+        return False
+    return now - run.permission_seen_at >= _PERMISSION_BUTTON_DELAY_S
+
+
 async def _run_live_progress(
     cfg: TelegramBridgeConfig,
     *,
@@ -826,16 +847,20 @@ async def _run_live_progress(
         while not run.done.is_set():
             pane = await asyncio.to_thread(_tmux_capture, tmux_session)
             text = _extract_live_progress_text(pane)
-            if text != run.last_text:
+            now = time.time()
+            permission_controls = _permission_controls_ready(run, pane=pane, text=text, now=now)
+            if text != run.last_text or permission_controls != run.permission_controls_visible:
                 run.last_text = text
+                run.permission_controls_visible = permission_controls
                 await _maybe_send_verbose_actions(cfg, run=run, text=text)
                 await cfg.exec_cfg.transport.edit(
                     ref=run.progress_ref,
                     message=_render_live_progress(
                         text=text,
-                        elapsed_s=time.time() - run.started_at,
+                        elapsed_s=now - run.started_at,
                         status="working",
                         engine=engine,
+                        permission_controls=permission_controls,
                     ),
                 )
             try:
@@ -854,6 +879,7 @@ async def _run_live_progress(
                 elapsed_s=time.time() - run.started_at,
                 status="done",
                 engine=engine,
+                permission_controls=False,
             ),
         )
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:

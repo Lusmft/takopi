@@ -788,12 +788,24 @@ def test_live_progress_choice_sends_tmux_choice(monkeypatch):
     assert replies == ["sent permission choice `2` to Claude."]
 
 
-def test_render_live_progress_adds_permission_buttons() -> None:
+def test_render_live_progress_hides_permission_buttons_by_default() -> None:
     rendered = telegram_channel_bridge._render_live_progress(
         text="· Bash: Read file\n  ↳ waiting for permission",
         elapsed_s=3,
         status="working",
         engine="claude",
+    )
+
+    assert rendered.extra["reply_markup"]["inline_keyboard"] == []
+
+
+def test_render_live_progress_adds_permission_buttons_when_ready() -> None:
+    rendered = telegram_channel_bridge._render_live_progress(
+        text="· Bash: Read file\n  ↳ waiting for permission",
+        elapsed_s=3,
+        status="working",
+        engine="claude",
+        permission_controls=True,
     )
 
     keyboard = rendered.extra["reply_markup"]["inline_keyboard"]
@@ -873,6 +885,21 @@ def test_live_progress_callback_sends_tmux_choice(monkeypatch):
     assert handled is True
     assert sent == [("sess", "2")]
     assert answers == [("cb1", "sent permission choice 2 to Claude.")]
+
+
+def test_permission_controls_ready_debounces_transient_prompt() -> None:
+    run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=telegram_channel_bridge.MessageRef(channel_id=123, message_id=10),
+        started_at=0,
+    )
+    pane = "Do you want to proceed?\n1. Yes\n2. Yes, allow reading\n3. No"
+    text = "· Bash: Read file\n  ↳ waiting for permission"
+
+    assert not telegram_channel_bridge._permission_controls_ready(run, pane=pane, text=text, now=10.0)
+    assert not telegram_channel_bridge._permission_controls_ready(run, pane=pane, text=text, now=11.0)
+    assert telegram_channel_bridge._permission_controls_ready(run, pane=pane, text=text, now=12.1)
+    assert not telegram_channel_bridge._permission_controls_ready(run, pane="done", text="done", now=13.0)
+    assert run.permission_seen_at is None
 
 
 def test_register_live_progress_supersedes_previous_chat_run() -> None:
