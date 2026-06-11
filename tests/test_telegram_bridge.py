@@ -805,6 +805,26 @@ def test_render_live_progress_adds_permission_buttons() -> None:
     ]
 
 
+def test_render_live_progress_preserves_action_line_breaks() -> None:
+    rendered = telegram_channel_bridge._render_live_progress(
+        text=(
+            "· Bash: git status\n"
+            '  ↳ On branch release/1_23_13 Untracked files: (use "git add <file>..." to include)\n'
+            '· Bash: echo "---vs main---"; git log --oneline main..HEAD\n'
+            "  ↳ ---vs main--- 218 commits ahead of main\n"
+            "↻ Metamorphosing…"
+        ),
+        elapsed_s=14,
+        status="working",
+        engine="claude",
+    )
+
+    assert "· Bash: git status\n↳ On branch release/1_23_13" in rendered.text
+    assert 'include)\n· Bash: echo "---vs main---"; git log' in rendered.text
+    assert "main..HEAD\n↳ ---vs main--- 218 commits ahead of main" in rendered.text
+    assert "main\n↻ Metamorphosing" in rendered.text
+
+
 def test_live_progress_callback_sends_tmux_choice(monkeypatch):
     telegram_channel_bridge._LIVE_PROGRESS_RUNS.clear()
     telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS.clear()

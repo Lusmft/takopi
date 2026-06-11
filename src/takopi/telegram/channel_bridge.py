@@ -90,10 +90,11 @@ def _render_live_progress(
     body = text.strip() or "↻ Working…"
     if len(body) > _MAX_LIVE_PROGRESS_CHARS:
         body = body[: _MAX_LIVE_PROGRESS_CHARS - 1] + "…"
+    markdown_body = body.replace("\n", "  \n")
     rendered_text, entities = prepare_telegram(
         MarkdownParts(
             header=f"{status} · {engine} · {max(0, int(elapsed_s))}s",
-            body=body,
+            body=markdown_body,
             footer=None,
         )
     )
