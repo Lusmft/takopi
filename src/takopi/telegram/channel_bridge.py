@@ -144,6 +144,32 @@ def _extract_live_progress_text(pane: str) -> str:
     return "\n".join(lines[-12:])
 
 
+def channel_bridge_status_text(cfg: TelegramBridgeConfig) -> str:
+    bridge = cfg.channel_bridge
+    lines = [
+        "Takopi channel bridge:",
+        f"enabled: {'yes' if bridge.enabled else 'no'}",
+        f"inbound: {bridge.inbound_url}",
+        f"reply: {bridge.reply_host}:{bridge.reply_port}",
+        f"live progress: {'yes' if bridge.live_progress else 'no'}",
+        f"tmux: {bridge.tmux_session or '-'}",
+    ]
+    if bridge.tmux_session:
+        pane = _tmux_capture(bridge.tmux_session)
+        if pane:
+            progress_text = _extract_live_progress_text(pane)
+            prompt_visible = _looks_like_claude_permission_prompt(progress_text)
+            lines.append(f"permission prompt visible: {'yes' if prompt_visible else 'no'}")
+            if progress_text:
+                preview = progress_text.strip().replace("\n", " / ")
+                if len(preview) > 240:
+                    preview = f"{preview[:239]}…"
+                lines.append(f"visible state: {preview}")
+        else:
+            lines.append("tmux capture: unavailable")
+    return "\n".join(lines)
+
+
 async def _register_live_progress(chat_id: int, user_msg_id: int, run: LiveProgressRun) -> None:
     async with _LIVE_PROGRESS_LOCK:
         source_key = (chat_id, user_msg_id)

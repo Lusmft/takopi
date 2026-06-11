@@ -63,6 +63,7 @@ from .topics import (
 )
 from .client import poll_incoming
 from .channel_bridge import (
+    channel_bridge_status_text,
     forward_to_channel,
     handle_live_progress_choice,
     run_reply_server,
@@ -81,6 +82,13 @@ from .types import (
 from .voice import transcribe_voice
 
 logger = get_logger(__name__)
+
+_CHANNEL_USAGE_COMPAT_TEXT = (
+    "`/usage` is a Claude Code TUI command. Takopi Channels cannot execute it "
+    "as a terminal slash-command yet.\n\n"
+    "Current compatibility: channel usage is not available as structured data. "
+    "Use `/status` to check the live Claude Code channel/tmux state."
+)
 
 __all__ = ["poll_updates", "run_main_loop", "send_with_resume"]
 
@@ -183,6 +191,14 @@ def _dispatch_builtin_command(
         task_group.start_soon(handler)
         return True
 
+    if command_id == "usage":
+        task_group.start_soon(partial(reply, text=_CHANNEL_USAGE_COMPAT_TEXT))
+        return True
+
+    if command_id == "status":
+        task_group.start_soon(partial(reply, text=channel_bridge_status_text(cfg)))
+        return True
+
     if command_id == "ctx":
         topic_key = (
             _topic_key(msg, cfg, scope_chat_ids=scope_chat_ids)
@@ -211,7 +227,7 @@ def _dispatch_builtin_command(
         return True
 
     if cfg.topics.enabled and topic_store is not None:
-        if command_id == "new":
+        if command_id in {"new", "compact"}:
             handler = partial(
                 handle_new_command,
                 cfg,
@@ -1739,7 +1755,7 @@ async def run_main_loop(
 
                 command_id = classification.command_id
                 args_text = classification.args_text
-                if command_id == "new":
+                if command_id in {"new", "compact"}:
                     forward_coalescer.cancel(forward_key)
                     if state.topic_store is not None and topic_key is not None:
                         tg.start_soon(

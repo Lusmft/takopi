@@ -143,7 +143,10 @@ def test_build_bot_commands_includes_cancel_and_engine() -> None:
     assert {"command": "cancel", "description": "cancel run"} in commands
     assert {"command": "file", "description": "upload or fetch files"} in commands
     assert {"command": "new", "description": "start a new thread"} in commands
+    assert {"command": "compact", "description": "reset current thread"} in commands
     assert {"command": "ctx", "description": "show or update context"} in commands
+    assert {"command": "usage", "description": "show usage info"} in commands
+    assert {"command": "status", "description": "show channel status"} in commands
     assert {"command": "agent", "description": "set default engine"} in commands
     assert any(cmd["command"] == "codex" for cmd in commands)
 
@@ -306,6 +309,29 @@ gh auth login
     assert "Bash(pwd)" in text
     assert "Worked for 3s" in text
     assert "gh auth login" not in text
+
+
+def test_channel_bridge_status_text_mentions_tmux(monkeypatch) -> None:
+    cfg = SimpleNamespace(
+        channel_bridge=SimpleNamespace(
+            enabled=True,
+            inbound_url="http://127.0.0.1:8788/push",
+            reply_host="127.0.0.1",
+            reply_port=8789,
+            live_progress=True,
+            tmux_session="takopi_channel_usegateway",
+        )
+    )
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_capture",
+        lambda session: "← takopi: request\n● ok",
+    )
+
+    text = telegram_channel_bridge.channel_bridge_status_text(cfg)
+
+    assert "tmux: takopi_channel_usegateway" in text
+    assert "visible state: ok" in text
 
 
 def test_live_progress_choice_requires_permission_prompt(monkeypatch):
@@ -3336,6 +3362,96 @@ async def test_run_main_loop_new_clears_chat_sessions(tmp_path: Path) -> None:
             chat_id=123,
             message_id=1,
             text="/new",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    await run_main_loop(cfg, poller)
+
+    store2 = ChatSessionStore(resolve_sessions_path(state_path))
+    assert await store2.get_session_resume(123, None, CODEX_ENGINE) is None
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_usage_is_handled_locally() -> None:
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(router=_make_router(runner), projects=_empty_projects())
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="stateless",
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/usage",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls == []
+    assert transport.send_calls
+    assert "Claude Code TUI command" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_compact_clears_chat_sessions(tmp_path: Path) -> None:
+    state_path = tmp_path / "takopi.toml"
+    store = ChatSessionStore(resolve_sessions_path(state_path))
+    await store.set_session_resume(
+        123, None, ResumeToken(engine=CODEX_ENGINE, value="resume-1")
+    )
+
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    exec_cfg = ExecBridgeConfig(
+        transport=transport,
+        presenter=MarkdownPresenter(),
+        final_notify=True,
+    )
+    runtime = TransportRuntime(
+        router=_make_router(runner),
+        projects=_empty_projects(),
+        config_path=state_path,
+    )
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=exec_cfg,
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="chat",
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/compact",
             reply_to_message_id=None,
             reply_to_text=None,
             sender_id=123,

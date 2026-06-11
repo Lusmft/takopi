@@ -72,7 +72,10 @@ def build_bot_commands(
         seen.add(cmd)
     for cmd, description in [
         ("new", "start a new thread"),
+        ("compact", "reset current thread"),
         ("ctx", "show or update context"),
+        ("usage", "show usage info"),
+        ("status", "show channel status"),
         ("agent", "set default engine"),
         ("model", "set model override"),
         ("reasoning", "set reasoning override"),
