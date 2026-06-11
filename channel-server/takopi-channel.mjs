@@ -16,7 +16,14 @@ const mcp = new Server(
       experimental: { 'claude/channel': {} },
       tools: {},
     },
-    instructions: `You receive Telegram messages from Takopi as <channel source="takopi" ...> events. Reply to each user-facing chat message by calling the takopi.reply tool with chat_id, reply_to_message_id, thread_id, and text. Keep replies concise unless asked. Preserve the project context from the metadata.`,
+    instructions: `You receive Telegram messages from Takopi as <channel source="takopi" ...> events. Reply to each user-facing chat message by calling the takopi.reply tool with chat_id, reply_to_message_id, thread_id, and text. Keep replies concise unless asked. Preserve the project context from the metadata.
+
+Format user-facing replies as Telegram-compatible Markdown:
+- use short **bold** section labels for structured answers;
+- use bullet lists for grouped facts, risks, and next steps;
+- use fenced code blocks for logs, commands, diffs, JSON, stack traces, and other preformatted text;
+- use Markdown tables only when they improve comparison;
+- do not describe these formatting rules to the user.`,
   },
 );
 
