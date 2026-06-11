@@ -242,10 +242,10 @@ def _format_usage_overlay_for_telegram(text: str) -> str:
             if current_section in sections_with_usage_bar:
                 continue
             sections_with_usage_bar.add(current_section)
-            lines.append(line)
+            lines.append(f"- {line}")
             continue
         if line.startswith("Resets ") or "not enabled" in line:
-            lines.append(line)
+            lines.append(f"- {line}")
             continue
         if current_section == "Usage by model" and lines and lines[-1].startswith("- "):
             lines[-1] = f"{lines[-1]} {line}"

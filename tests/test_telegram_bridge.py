@@ -396,8 +396,8 @@ def test_format_usage_overlay_for_telegram_wraps_sections() -> None:
     assert "- Total duration (API): 2m 20s" in text
     assert "Usage by model\n- claude-opus-4-7:" in text
     assert "cache write ($2.99)" in text
-    assert "Current session\n█████ 10% used\nResets 2pm (UTC)" in text
-    assert "Extra usage\nExtra usage not enabled" in text
+    assert "Current session\n- █████ 10% used\n- Resets 2pm (UTC)" in text
+    assert "Extra usage\n- Extra usage not enabled" in text
     assert "█ 6% used" not in text
     assert "Rese s" not in text
     assert "Refresh1" not in text
