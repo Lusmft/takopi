@@ -102,6 +102,13 @@ async def _handle_channel_usage_command(
     await reply(text=await channel_bridge_slash_command_text(cfg, "/usage"))
 
 
+async def _handle_channel_status_command(
+    cfg: TelegramBridgeConfig,
+    reply: Callable[..., Awaitable[None]],
+) -> None:
+    await reply(text=await channel_bridge_slash_command_text(cfg, "/status"))
+
+
 async def _handle_channel_model_command(
     cfg: TelegramBridgeConfig,
     args_text: str,
@@ -236,6 +243,10 @@ def _dispatch_builtin_command(
         return True
 
     if command_id == "status":
+        task_group.start_soon(_handle_channel_status_command, cfg, reply)
+        return True
+
+    if command_id == "bridge_status":
         task_group.start_soon(partial(reply, text=channel_bridge_status_text(cfg)))
         return True
 

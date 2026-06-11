@@ -28,7 +28,7 @@ from .render import MAX_BODY_CHARS, prepare_telegram, prepare_telegram_multi
 logger = get_logger(__name__)
 
 _MAX_LIVE_PROGRESS_CHARS = min(1600, MAX_BODY_CHARS)
-_CHANNEL_SLASH_COMMANDS = frozenset({"/model", "/usage"})
+_CHANNEL_SLASH_COMMANDS = frozenset({"/model", "/status", "/usage"})
 _CHANNEL_SLASH_TIMEOUT_S = 12.0
 _TELEGRAM_BULLET = "·"
 

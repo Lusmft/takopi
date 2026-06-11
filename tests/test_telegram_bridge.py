@@ -146,7 +146,8 @@ def test_build_bot_commands_includes_cancel_and_engine() -> None:
     assert {"command": "compact", "description": "reset current thread"} in commands
     assert {"command": "ctx", "description": "show or update context"} in commands
     assert {"command": "usage", "description": "show usage info"} in commands
-    assert {"command": "status", "description": "show channel status"} in commands
+    assert {"command": "status", "description": "show Claude Code status"} in commands
+    assert {"command": "bridge_status", "description": "show Takopi channel status"} in commands
     assert {"command": "verbose", "description": "toggle action updates"} in commands
     assert {"command": "agent", "description": "set default engine"} in commands
     assert {"command": "model", "description": "choose Claude Code model"} in commands
@@ -3644,6 +3645,99 @@ async def test_run_main_loop_usage_uses_channel_slash_passthrough(monkeypatch) -
     assert runner.calls == []
     assert transport.send_calls
     assert "Total cost: $0.42" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_status_uses_channel_slash_passthrough(monkeypatch) -> None:
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(router=_make_router(runner), projects=_empty_projects())
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="stateless",
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/status",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    async def fake_status(cfg: TelegramBridgeConfig, command: str) -> str:
+        _ = cfg
+        assert command == "/status"
+        return "Claude Code /status:\n\nClaude Code v2.1.173"
+
+    monkeypatch.setattr(telegram_loop, "channel_bridge_slash_command_text", fake_status)
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls == []
+    assert transport.send_calls
+    assert "Claude Code v2.1.173" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_bridge_status_is_local(monkeypatch) -> None:
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(router=_make_router(runner), projects=_empty_projects())
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="stateless",
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/bridge_status",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    monkeypatch.setattr(
+        telegram_loop,
+        "channel_bridge_status_text",
+        lambda cfg: "Takopi channel bridge:\nenabled: yes",
+    )
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls == []
+    assert transport.send_calls
+    assert "Takopi channel bridge:" in transport.send_calls[-1]["message"].text
 
 
 @pytest.mark.anyio
