@@ -28,7 +28,7 @@ from .render import MAX_BODY_CHARS, prepare_telegram, prepare_telegram_multi
 logger = get_logger(__name__)
 
 _MAX_LIVE_PROGRESS_CHARS = min(1600, MAX_BODY_CHARS)
-_CHANNEL_SLASH_COMMANDS = frozenset({"/model", "/status", "/usage"})
+_CHANNEL_SLASH_COMMANDS = frozenset({"/model", "/stats", "/status", "/usage"})
 _CHANNEL_SLASH_TIMEOUT_S = 12.0
 _TELEGRAM_BULLET = "·"
 
@@ -236,6 +236,8 @@ def _format_channel_slash_result(command: str, text: str) -> str:
         body = _format_usage_overlay_for_telegram(body)
     elif command == "/status":
         body = _format_status_overlay_for_telegram(body)
+    elif command == "/stats":
+        body = _format_stats_overlay_for_telegram(body)
     return f"Claude Code {command}:\n\n{body}"
 
 
@@ -390,6 +392,33 @@ def _format_status_overlay_for_telegram(text: str) -> str:
             lines[-1] = f"{lines[-1]} {line}"
             continue
         lines.append(line)
+    return "  \n".join(lines).strip() or text.strip()
+
+
+def _format_stats_overlay_for_telegram(text: str) -> str:
+    lines: list[str] = []
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        normalized = re.sub(r"\s+", " ", stripped)
+        if "Settings Status Config Usage Stats" in normalized:
+            continue
+        if "dialog dismissed" in normalized or "Esc to cancel" in normalized:
+            continue
+        if normalized.startswith("↓ stats") or "ctrl+s to copy" in normalized:
+            continue
+        parts = [part.strip() for part in re.split(r"\s{2,}", stripped) if part.strip()]
+        if len(parts) > 1 and all(":" in part for part in parts):
+            lines.extend(f"{_TELEGRAM_BULLET} {part}" for part in parts)
+            continue
+        if ":" in normalized and not any(char in normalized for char in "░▒▓█"):
+            lines.append(f"{_TELEGRAM_BULLET} {normalized}")
+            continue
+        if any(char in normalized for char in "░▒▓█") or "··" in normalized:
+            lines.append(raw.rstrip())
+            continue
+        lines.append(normalized)
     return "  \n".join(lines).strip() or text.strip()
 
 

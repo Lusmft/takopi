@@ -76,6 +76,7 @@ def build_bot_commands(
         ("ctx", "show or update context"),
         ("usage", "show usage info"),
         ("status", "show Claude Code status"),
+        ("stats", "show Claude Code stats"),
         ("bridge_status", "show Takopi channel status"),
         ("verbose", "toggle action updates"),
         ("agent", "set default engine"),

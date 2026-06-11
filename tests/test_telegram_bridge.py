@@ -147,6 +147,7 @@ def test_build_bot_commands_includes_cancel_and_engine() -> None:
     assert {"command": "ctx", "description": "show or update context"} in commands
     assert {"command": "usage", "description": "show usage info"} in commands
     assert {"command": "status", "description": "show Claude Code status"} in commands
+    assert {"command": "stats", "description": "show Claude Code stats"} in commands
     assert {"command": "bridge_status", "description": "show Takopi channel status"} in commands
     assert {"command": "verbose", "description": "toggle action updates"} in commands
     assert {"command": "agent", "description": "set default engine"} in commands
@@ -439,6 +440,38 @@ def test_format_status_overlay_for_telegram_wraps_fields() -> None:
     assert "· Model: Default (Opus 4.8 with 1M context" in text
     assert "complex tasks)" in text
     assert "· MCP servers: 1 connected, 1 failed · /mcp" in text
+
+
+def test_format_stats_overlay_for_telegram_splits_metrics() -> None:
+    raw = textwrap.dedent(
+        """
+        Settings  Status   Config   Usage   Stats
+           Overview   Models
+
+          Mon ·······▒▒▓█
+              Less ░ ▒ ▓ █ More
+
+          Favorite model: Opus 4.8        Total tokens: 4.1m
+          Sessions: 376                   Longest session: 28d 2h 31m
+          Active days: 31/31              Longest streak: 31 days
+          Most active day: May 14         Current streak: 31 days
+          You've used ~14x more tokens than Crime and Punishment
+            ↓ stats · r to cycle dates · ctrl+s to copy
+        """
+    )
+
+    text = telegram_channel_bridge._format_stats_overlay_for_telegram(raw)
+
+    assert "Settings  Status" not in text
+    assert "Overview Models" in text
+    assert "Mon ·······▒▒▓█" in text
+    assert "Less ░ ▒ ▓ █ More" in text
+    assert "· Favorite model: Opus 4.8" in text
+    assert "· Total tokens: 4.1m" in text
+    assert "· Sessions: 376" in text
+    assert "· Longest session: 28d 2h 31m" in text
+    assert "· Current streak: 31 days" in text
+    assert "ctrl+s" not in text
 
 
 def test_format_model_overlay_for_telegram_lists_options() -> None:
@@ -3715,6 +3748,53 @@ async def test_run_main_loop_status_uses_channel_slash_passthrough(monkeypatch) 
     assert runner.calls == []
     assert transport.send_calls
     assert "Claude Code v2.1.173" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_stats_uses_channel_slash_passthrough(monkeypatch) -> None:
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(router=_make_router(runner), projects=_empty_projects())
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="stateless",
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/stats",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    async def fake_stats(cfg: TelegramBridgeConfig, command: str) -> str:
+        _ = cfg
+        assert command == "/stats"
+        return "Claude Code /stats:\n\n· Total tokens: 4.1m"
+
+    monkeypatch.setattr(telegram_loop, "channel_bridge_slash_command_text", fake_stats)
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls == []
+    assert transport.send_calls
+    assert "Total tokens: 4.1m" in transport.send_calls[-1]["message"].text
 
 
 @pytest.mark.anyio
