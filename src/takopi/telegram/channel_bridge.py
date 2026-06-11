@@ -6,7 +6,7 @@ import re
 import subprocess
 import time
 from contextlib import suppress
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -223,6 +223,19 @@ def _format_channel_slash_result(command: str, text: str) -> str:
     return f"Claude Code {command}:\n\n{body}"
 
 
+def _current_model_from_options(options: Sequence[str]) -> str | None:
+    for option in options:
+        if "current" not in option.lower():
+            continue
+        marker = " · current · "
+        if marker in option:
+            value = option.split(marker, 1)[1]
+        else:
+            value = re.sub(r"^\d+\.\s+", "", option)
+        value = value.split(" · ", 1)[0].strip()
+        return value or None
+    return None
+
 def _format_model_overlay_for_telegram(text: str) -> str:
     clean = _normalize_interactive_text(text)
     options: list[str] = []
@@ -254,7 +267,12 @@ def _format_model_overlay_for_telegram(text: str) -> str:
     if current is not None:
         options.append(current)
 
-    lines = ["Select Claude Code model:"]
+    current_model = _current_model_from_options(options)
+    lines = ["Claude Code model:"]
+    if current_model:
+        lines.append(f"Current: {current_model}")
+        lines.append("")
+    lines.append("Available models:")
     lines.extend(f"{_TELEGRAM_BULLET} {option}" for option in options)
     if effort:
         lines.append("")

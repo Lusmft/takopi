@@ -437,7 +437,9 @@ def test_format_model_overlay_for_telegram_lists_options() -> None:
 
     text = telegram_channel_bridge._format_model_overlay_for_telegram(raw)
 
-    assert "Select Claude Code model:" in text
+    assert "Claude Code model:" in text
+    assert "Current: Opus 4.7 with 1M context" in text
+    assert "Available models:" in text
     assert "· 1. Default (recommended)" in text
     assert "current" in text
     assert "· 2. Sonnet" in text
