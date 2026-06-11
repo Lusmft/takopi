@@ -63,6 +63,7 @@ from .topics import (
 )
 from .client import poll_incoming
 from .channel_bridge import (
+    channel_bridge_model_command_text,
     channel_bridge_slash_command_text,
     channel_bridge_status_text,
     forward_to_channel,
@@ -99,6 +100,14 @@ async def _handle_channel_usage_command(
     reply: Callable[..., Awaitable[None]],
 ) -> None:
     await reply(text=await channel_bridge_slash_command_text(cfg, "/usage"))
+
+
+async def _handle_channel_model_command(
+    cfg: TelegramBridgeConfig,
+    args_text: str,
+    reply: Callable[..., Awaitable[None]],
+) -> None:
+    await reply(text=await channel_bridge_model_command_text(cfg, args_text))
 
 
 async def _handle_verbose_command(
@@ -294,6 +303,9 @@ def _dispatch_builtin_command(
             return True
 
     if command_id == "model":
+        if cfg.channel_bridge.enabled:
+            task_group.start_soon(_handle_channel_model_command, cfg, args_text, reply)
+            return True
         handler = partial(
             handle_model_command,
             cfg,

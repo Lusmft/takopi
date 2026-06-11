@@ -149,6 +149,7 @@ def test_build_bot_commands_includes_cancel_and_engine() -> None:
     assert {"command": "status", "description": "show channel status"} in commands
     assert {"command": "verbose", "description": "toggle action updates"} in commands
     assert {"command": "agent", "description": "set default engine"} in commands
+    assert {"command": "model", "description": "choose Claude Code model"} in commands
     assert any(cmd["command"] == "codex" for cmd in commands)
 
 
@@ -414,6 +415,34 @@ def test_format_usage_overlay_keeps_bullets_after_telegram_render() -> None:
 
     assert "· Total cost: $2.99" in rendered
     assert "- Total cost: $2.99" not in rendered
+
+
+def test_format_model_overlay_for_telegram_lists_options() -> None:
+    raw = textwrap.dedent(
+        """
+        Select model
+        Switch between Claude models. Applies to this session and future Claude Code
+        sessions. For other/previous model names, specify with --model.
+
+        ❯ 1. Default (recommended) ✔  Opus 4.7 with 1M context · Most capable for
+                                      complex work
+          2. Sonnet                   Sonnet 4.6 · Best for everyday tasks
+          3. Haiku                    Haiku 4.5 · Fastest for quick answers
+          4. Fable                    Fable 5 · Most capable
+
+        ◉ xHigh effort (default) ←/→ to adjust
+        Enter to confirm · Esc to cancel
+        """
+    )
+
+    text = telegram_channel_bridge._format_model_overlay_for_telegram(raw)
+
+    assert "Select Claude Code model:" in text
+    assert "· 1. Default (recommended)" in text
+    assert "current" in text
+    assert "· 2. Sonnet" in text
+    assert "Effort: xHigh effort" in text
+    assert "Use `/model 1`, `/model 2`, `/model 3`, or `/model 4`." in text
 
 
 @pytest.mark.anyio
@@ -3548,6 +3577,58 @@ async def test_run_main_loop_usage_uses_channel_slash_passthrough(monkeypatch) -
     assert runner.calls == []
     assert transport.send_calls
     assert "Total cost: $0.42" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_model_uses_channel_passthrough(monkeypatch) -> None:
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(router=_make_router(runner), projects=_empty_projects())
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="stateless",
+    )
+    cfg.channel_bridge.enabled = True
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/model 2",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    async def fake_model(cfg: TelegramBridgeConfig, args_text: str) -> str:
+        _ = cfg
+        assert args_text == "2"
+        return "Claude Code /model:\n\nSwitched model to Sonnet."
+
+    async def noop_reply_server(cfg: TelegramBridgeConfig) -> None:
+        _ = cfg
+
+    monkeypatch.setattr(telegram_loop, "channel_bridge_model_command_text", fake_model)
+    monkeypatch.setattr(telegram_loop, "run_reply_server", noop_reply_server)
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls == []
+    assert transport.send_calls
+    assert "Switched model to Sonnet" in transport.send_calls[-1]["message"].text
 
 
 @pytest.mark.anyio

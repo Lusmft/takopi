@@ -19,6 +19,7 @@ from ..runners.claude import (
     _format_interactive_slash_overlay,
     _is_interactive_slash_overlay,
     _normalize_interactive_text,
+    _slash_segment_after_latest_prompt,
 )
 from ..transport import MessageRef, RenderedMessage, SendOptions
 from .bridge import TelegramBridgeConfig, send_plain
@@ -27,7 +28,7 @@ from .render import MAX_BODY_CHARS, prepare_telegram, prepare_telegram_multi
 logger = get_logger(__name__)
 
 _MAX_LIVE_PROGRESS_CHARS = min(1600, MAX_BODY_CHARS)
-_CHANNEL_SLASH_COMMANDS = frozenset({"/usage"})
+_CHANNEL_SLASH_COMMANDS = frozenset({"/model", "/usage"})
 _CHANNEL_SLASH_TIMEOUT_S = 12.0
 _TELEGRAM_BULLET = "·"
 
@@ -112,6 +113,16 @@ def _tmux_send_choice(session: str, choice: str) -> bool:
 def _tmux_send_slash_command(session: str, command: str) -> bool:
     proc = subprocess.run(
         ["tmux", "send-keys", "-t", session, "C-u", command, "Enter"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc.returncode == 0
+
+
+def _tmux_send_keys(session: str, *keys: str) -> bool:
+    proc = subprocess.run(
+        ["tmux", "send-keys", "-t", session, *keys],
         check=False,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -212,6 +223,47 @@ def _format_channel_slash_result(command: str, text: str) -> str:
     return f"Claude Code {command}:\n\n{body}"
 
 
+def _format_model_overlay_for_telegram(text: str) -> str:
+    clean = _normalize_interactive_text(text)
+    options: list[str] = []
+    effort = ""
+    current: str | None = None
+    for raw in clean.splitlines():
+        line = re.sub(r"\s+", " ", raw.strip())
+        if not line:
+            continue
+        if line in {"Select model"}:
+            continue
+        if line.startswith("Switch between Claude models"):
+            continue
+        if line.startswith("sessions. For other/previous"):
+            continue
+        if "Enter to confirm" in line or "Esc to cancel" in line:
+            continue
+        option = re.match(r"^(?:❯ )?([1-9])\.\s+(.+)$", line)
+        if option is not None:
+            if current is not None:
+                options.append(current)
+            current = f"{option.group(1)}. {option.group(2).replace(' ✔ ', ' · current · ')}"
+            continue
+        if "effort" in line.lower():
+            effort = line.replace("◉", "").strip()
+            continue
+        if current is not None:
+            current = f"{current} {line}"
+    if current is not None:
+        options.append(current)
+
+    lines = ["Select Claude Code model:"]
+    lines.extend(f"{_TELEGRAM_BULLET} {option}" for option in options)
+    if effort:
+        lines.append("")
+        lines.append(f"Effort: {effort}")
+    lines.append("")
+    lines.append("Use `/model 1`, `/model 2`, `/model 3`, or `/model 4`.")
+    return "  \n".join(lines).strip()
+
+
 def _format_usage_overlay_for_telegram(text: str) -> str:
     section_names = {
         "Session",
@@ -287,6 +339,60 @@ def _capture_channel_slash_command(session: str, command: str) -> str:
     return f"timed out waiting for Claude Code {command} output."
 
 
+def _wait_for_model_overlay(session: str) -> str:
+    deadline = time.time() + _CHANNEL_SLASH_TIMEOUT_S
+    last_segment = ""
+    while time.time() < deadline:
+        pane = _tmux_capture(session)
+        segment = _slash_segment_after_latest_prompt("/model", pane) or pane
+        if "Select model" in segment:
+            return segment
+        last_segment = segment
+        time.sleep(0.5)
+    return last_segment
+
+
+def _capture_channel_model_command(session: str, selection: str | None) -> str:
+    sent = _tmux_send_slash_command(session, "/model")
+    if not sent:
+        return "failed to send /model to Claude tmux session."
+
+    segment = _wait_for_model_overlay(session)
+    if "Select model" not in segment:
+        _tmux_send_escape(session)
+        return "timed out waiting for Claude Code /model output."
+
+    if selection is None:
+        _tmux_send_escape(session)
+        return f"Claude Code /model:\n\n{_format_model_overlay_for_telegram(segment)}"
+
+    if selection not in {"1", "2", "3", "4"}:
+        _tmux_send_escape(session)
+        return "usage: `/model`, `/model 1`, `/model 2`, `/model 3`, or `/model 4`"
+
+    moves = ["Down"] * (int(selection) - 1)
+    _tmux_send_keys(session, *moves, "Enter")
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        pane = _tmux_capture(session)
+        segment = _slash_segment_after_latest_prompt("/model", pane) or pane
+        clean = _normalize_interactive_text(segment)
+        for raw in reversed(clean.splitlines()):
+            line = raw.strip()
+            lowered = line.lower()
+            if "model as" in lowered or "switched model" in lowered or "set model" in lowered:
+                return f"Claude Code /model:\n\n{line.lstrip('⎿ ').strip()}"
+        time.sleep(0.5)
+    clean = _normalize_interactive_text(_tmux_capture(session))
+    for raw in reversed(clean.splitlines()):
+        line = raw.strip()
+        lowered = line.lower()
+        if "model as" in lowered or "switched model" in lowered or "set model" in lowered:
+            return f"Claude Code /model:\n\n{line.lstrip('⎿ ').strip()}"
+    return f"Claude Code /model:\n\nselected option {selection}."
+
+
+
 async def channel_bridge_slash_command_text(
     cfg: TelegramBridgeConfig,
     command: str,
@@ -299,10 +405,33 @@ async def channel_bridge_slash_command_text(
         return "channel bridge is disabled."
     if not bridge.tmux_session:
         return "Claude Code tmux session is not configured."
+    if normalized == "/model":
+        return await asyncio.to_thread(
+            _capture_channel_model_command,
+            bridge.tmux_session,
+            None,
+        )
     return await asyncio.to_thread(
         _capture_channel_slash_command,
         bridge.tmux_session,
         normalized,
+    )
+
+
+async def channel_bridge_model_command_text(
+    cfg: TelegramBridgeConfig,
+    args_text: str,
+) -> str:
+    bridge = cfg.channel_bridge
+    if not bridge.enabled:
+        return "channel bridge is disabled."
+    if not bridge.tmux_session:
+        return "Claude Code tmux session is not configured."
+    selection = args_text.strip() or None
+    return await asyncio.to_thread(
+        _capture_channel_model_command,
+        bridge.tmux_session,
+        selection,
     )
 
 

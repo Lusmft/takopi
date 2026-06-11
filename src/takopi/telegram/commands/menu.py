@@ -78,7 +78,7 @@ def build_bot_commands(
         ("status", "show channel status"),
         ("verbose", "toggle action updates"),
         ("agent", "set default engine"),
-        ("model", "set model override"),
+        ("model", "choose Claude Code model"),
         ("reasoning", "set reasoning override"),
         ("trigger", "set trigger mode"),
     ]:
