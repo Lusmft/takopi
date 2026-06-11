@@ -101,6 +101,36 @@ async def _handle_channel_usage_command(
     await reply(text=await channel_bridge_slash_command_text(cfg, "/usage"))
 
 
+async def _handle_verbose_command(
+    msg: TelegramIncomingMessage,
+    args_text: str,
+    chat_prefs: ChatPrefsStore | None,
+    reply: Callable[..., Awaitable[None]],
+) -> None:
+    if chat_prefs is None:
+        await reply(text="verbose settings are unavailable (no config path).")
+        return
+    arg = args_text.strip().lower()
+    if arg in {"on", "true", "1"}:
+        await chat_prefs.set_channel_verbose(msg.chat_id, True)
+        await reply(text="channel verbose mode: on")
+        return
+    if arg in {"off", "false", "0", "clear"}:
+        await chat_prefs.clear_channel_verbose(msg.chat_id)
+        await reply(text="channel verbose mode: off")
+        return
+    if arg not in {"", "show"}:
+        await reply(text="usage: `/verbose`, `/verbose on`, or `/verbose off`")
+        return
+    enabled = await chat_prefs.get_channel_verbose(msg.chat_id)
+    await reply(
+        text=(
+            f"channel verbose mode: {'on' if enabled else 'off'}\n\n"
+            "When on, Takopi sends extra Claude action messages during live progress."
+        )
+    )
+
+
 def _chat_session_key(
     msg: TelegramIncomingMessage, *, store: ChatSessionStore | None
 ) -> tuple[int, int | None] | None:
@@ -198,6 +228,16 @@ def _dispatch_builtin_command(
 
     if command_id == "status":
         task_group.start_soon(partial(reply, text=channel_bridge_status_text(cfg)))
+        return True
+
+    if command_id == "verbose":
+        task_group.start_soon(
+            _handle_verbose_command,
+            msg,
+            args_text,
+            chat_prefs,
+            reply,
+        )
         return True
 
     if command_id == "ctx":
@@ -1395,6 +1435,11 @@ async def run_main_loop(
                     return
                 resume_token = resume_decision.resume_token
                 if cfg.channel_bridge.enabled and engine_override == "claude":
+                    verbose = (
+                        await state.chat_prefs.get_channel_verbose(chat_id)
+                        if state.chat_prefs is not None
+                        else False
+                    )
                     await forward_to_channel(
                         cfg,
                         chat_id=chat_id,
@@ -1403,6 +1448,7 @@ async def run_main_loop(
                         context=context,
                         thread_id=msg.thread_id,
                         engine=engine_override,
+                        verbose=verbose,
                     )
                     return
                 if resume_token is None:

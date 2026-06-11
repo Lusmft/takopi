@@ -76,6 +76,7 @@ def build_bot_commands(
         ("ctx", "show or update context"),
         ("usage", "show usage info"),
         ("status", "show channel status"),
+        ("verbose", "toggle action updates"),
         ("agent", "set default engine"),
         ("model", "set model override"),
         ("reasoning", "set reasoning override"),

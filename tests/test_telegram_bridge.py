@@ -147,6 +147,7 @@ def test_build_bot_commands_includes_cancel_and_engine() -> None:
     assert {"command": "ctx", "description": "show or update context"} in commands
     assert {"command": "usage", "description": "show usage info"} in commands
     assert {"command": "status", "description": "show channel status"} in commands
+    assert {"command": "verbose", "description": "toggle action updates"} in commands
     assert {"command": "agent", "description": "set default engine"} in commands
     assert any(cmd["command"] == "codex" for cmd in commands)
 
@@ -413,6 +414,39 @@ def test_format_usage_overlay_keeps_bullets_after_telegram_render() -> None:
 
     assert "· Total cost: $2.99" in rendered
     assert "- Total cost: $2.99" not in rendered
+
+
+@pytest.mark.anyio
+async def test_verbose_actions_send_new_lines_only() -> None:
+    transport = FakeTransport()
+    cfg = SimpleNamespace(
+        exec_cfg=SimpleNamespace(transport=transport),
+    )
+    run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=MessageRef(channel_id=123, message_id=10),
+        started_at=0,
+        chat_id=123,
+        user_msg_id=1,
+        thread_id=None,
+        verbose=True,
+    )
+
+    await telegram_channel_bridge._maybe_send_verbose_actions(
+        cfg,
+        run=run,
+        text="Read src/app.py\nRead src/app.py\nBash(pytest)",
+    )
+    await telegram_channel_bridge._maybe_send_verbose_actions(
+        cfg,
+        run=run,
+        text="Read src/app.py\nEdit src/app.py",
+    )
+
+    messages = [call["message"].text for call in transport.send_calls]
+    assert len(messages) == 3
+    assert any("Read src/app.py" in message for message in messages)
+    assert any("Bash(pytest)" in message for message in messages)
+    assert any("Edit src/app.py" in message for message in messages)
 
 
 @pytest.mark.anyio
@@ -3514,6 +3548,52 @@ async def test_run_main_loop_usage_uses_channel_slash_passthrough(monkeypatch) -
     assert runner.calls == []
     assert transport.send_calls
     assert "Total cost: $0.42" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_verbose_on_updates_chat_prefs(tmp_path: Path) -> None:
+    state_path = tmp_path / "takopi.toml"
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(
+        router=_make_router(runner),
+        projects=_empty_projects(),
+        config_path=state_path,
+    )
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="stateless",
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/verbose on",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    await run_main_loop(cfg, poller)
+
+    prefs = ChatPrefsStore(resolve_prefs_path(state_path))
+    assert await prefs.get_channel_verbose(123) is True
+    assert runner.calls == []
+    assert "verbose mode: on" in transport.send_calls[-1]["message"].text
 
 
 @pytest.mark.anyio

@@ -36,13 +36,20 @@ _TELEGRAM_BULLET = "·"
 class LiveProgressRun:
     progress_ref: MessageRef
     started_at: float
+    chat_id: int = 0
+    user_msg_id: int = 0
+    thread_id: int | None = None
+    verbose: bool = False
     done: asyncio.Event = field(default_factory=asyncio.Event)
     last_text: str = ""
+    verbose_seen: set[str] = field(default_factory=set)
+    verbose_sent: int = 0
 
 
 _LIVE_PROGRESS_RUNS: dict[tuple[int, int], LiveProgressRun] = {}
 _LIVE_PROGRESS_BY_PROGRESS: dict[tuple[int, int], tuple[int, int]] = {}
 _LIVE_PROGRESS_LOCK = asyncio.Lock()
+_MAX_VERBOSE_ACTION_MESSAGES = 8
 
 
 def _render_channel_reply(text: str) -> RenderedMessage:
@@ -370,6 +377,7 @@ async def _run_live_progress(
             text = _extract_live_progress_text(pane)
             if text != run.last_text:
                 run.last_text = text
+                await _maybe_send_verbose_actions(cfg, run=run, text=text)
                 await cfg.exec_cfg.transport.edit(
                     ref=run.progress_ref,
                     message=_render_live_progress(
@@ -385,6 +393,7 @@ async def _run_live_progress(
                 continue
         pane = await asyncio.to_thread(_tmux_capture, tmux_session)
         text = _extract_live_progress_text(pane)
+        await _maybe_send_verbose_actions(cfg, run=run, text=text)
         await cfg.exec_cfg.transport.edit(
             ref=run.progress_ref,
             message=_render_live_progress(
@@ -398,6 +407,46 @@ async def _run_live_progress(
         logger.warning("telegram.channel_bridge.live_progress_failed", error=str(exc))
 
 
+def _verbose_action_lines(text: str) -> list[str]:
+    out: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line == "↻ Working…":
+            continue
+        if re.search(r"\b(?:Worked|Brewed|Baked|Cooked|Crunched|Cogitated|Sautéed|Churned) for \d", line):
+            continue
+        if len(line) > 220:
+            line = f"{line[:219]}…"
+        out.append(line)
+    return out[-6:]
+
+
+async def _maybe_send_verbose_actions(
+    cfg: TelegramBridgeConfig,
+    *,
+    run: LiveProgressRun,
+    text: str,
+) -> None:
+    if not run.verbose or run.verbose_sent >= _MAX_VERBOSE_ACTION_MESSAGES:
+        return
+    for line in _verbose_action_lines(text):
+        if line in run.verbose_seen:
+            continue
+        run.verbose_seen.add(line)
+        run.verbose_sent += 1
+        await cfg.exec_cfg.transport.send(
+            channel_id=run.chat_id,
+            message=_render_channel_reply(f"Claude action:\n{_TELEGRAM_BULLET} {line}"),
+            options=SendOptions(
+                reply_to=MessageRef(channel_id=run.chat_id, message_id=run.user_msg_id),
+                thread_id=run.thread_id,
+                notify=False,
+            ),
+        )
+        if run.verbose_sent >= _MAX_VERBOSE_ACTION_MESSAGES:
+            return
+
+
 async def maybe_start_live_progress(
     cfg: TelegramBridgeConfig,
     *,
@@ -405,6 +454,7 @@ async def maybe_start_live_progress(
     user_msg_id: int,
     thread_id: int | None,
     engine: str | None,
+    verbose: bool = False,
 ) -> None:
     bridge = cfg.channel_bridge
     if not bridge.live_progress or not bridge.tmux_session:
@@ -425,7 +475,14 @@ async def maybe_start_live_progress(
     )
     if sent is None:
         return
-    run = LiveProgressRun(progress_ref=sent, started_at=time.time())
+    run = LiveProgressRun(
+        progress_ref=sent,
+        started_at=time.time(),
+        chat_id=chat_id,
+        user_msg_id=user_msg_id,
+        thread_id=thread_id,
+        verbose=verbose,
+    )
     await _register_live_progress(chat_id, user_msg_id, run)
     asyncio.create_task(
         _run_live_progress(
@@ -458,6 +515,7 @@ async def forward_to_channel(
     context: RunContext | None,
     thread_id: int | None,
     engine: str | None,
+    verbose: bool = False,
 ) -> bool:
     bridge = cfg.channel_bridge
     headers: dict[str, str] = {}
@@ -493,6 +551,7 @@ async def forward_to_channel(
         user_msg_id=user_msg_id,
         thread_id=thread_id,
         engine=engine,
+        verbose=verbose,
     )
     if bridge.send_progress:
         await send_plain(
