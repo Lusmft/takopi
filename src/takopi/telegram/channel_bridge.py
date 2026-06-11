@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 _MAX_LIVE_PROGRESS_CHARS = min(1600, MAX_BODY_CHARS)
 _CHANNEL_SLASH_COMMANDS = frozenset({"/usage"})
 _CHANNEL_SLASH_TIMEOUT_S = 12.0
-_TELEGRAM_BULLET = "\u2060•"
+_TELEGRAM_BULLET = "·"
 
 
 @dataclass(slots=True)

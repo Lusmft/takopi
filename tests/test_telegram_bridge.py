@@ -363,7 +363,7 @@ def test_capture_channel_slash_command_returns_overlay(monkeypatch) -> None:
     assert sent == [("sess", "/usage")]
     assert escaped == ["sess"]
     assert "Claude Code /usage:" in text
-    assert "• Total cost: $0.42" in text
+    assert "· Total cost: $0.42" in text
     assert "Settings  Status" not in text
 
 
@@ -392,12 +392,12 @@ def test_format_usage_overlay_for_telegram_wraps_sections() -> None:
     text = telegram_channel_bridge._format_usage_overlay_for_telegram(raw)
 
     assert "Settings  Status" not in text
-    assert "Session  \n\u2060• Total cost: $2.99" in text
-    assert "\u2060• Total duration (API): 2m 20s" in text
-    assert "Usage by model  \n\u2060• claude-opus-4-7:" in text
+    assert "Session  \n· Total cost: $2.99" in text
+    assert "· Total duration (API): 2m 20s" in text
+    assert "Usage by model  \n· claude-opus-4-7:" in text
     assert "cache write ($2.99)" in text
-    assert "Current session  \n\u2060• █████ 10% used  \n\u2060• Resets 2pm (UTC)" in text
-    assert "Extra usage  \n\u2060• Extra usage not enabled" in text
+    assert "Current session  \n· █████ 10% used  \n· Resets 2pm (UTC)" in text
+    assert "Extra usage  \n· Extra usage not enabled" in text
     assert "█ 6% used" not in text
     assert "Rese s" not in text
     assert "Refresh1" not in text
@@ -411,7 +411,7 @@ def test_format_usage_overlay_keeps_bullets_after_telegram_render() -> None:
 
     rendered, _entities = prepare_telegram(MarkdownParts(header=body))
 
-    assert "\u2060• Total cost: $2.99" in rendered
+    assert "· Total cost: $2.99" in rendered
     assert "- Total cost: $2.99" not in rendered
 
 
