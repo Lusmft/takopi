@@ -450,6 +450,7 @@ def test_format_stats_overlay_for_telegram_splits_metrics() -> None:
 
           Mon ·······▒▒▓█
               Less ░ ▒ ▓ █ More
+          All time · Last 7 days · Last 30 days
 
           Favorite model: Opus 4.8        Total tokens: 4.1m
           Sessions: 376                   Longest session: 28d 2h 31m
@@ -476,6 +477,7 @@ def test_format_stats_overlay_for_telegram_splits_metrics() -> None:
 
     rendered, entities = prepare_telegram(MarkdownParts(header=text))
     assert "Mon ·······▒▒▓█" in rendered
+    assert "Last 7 days · Last 30 days\n\n· Favorite model" in rendered
     assert any(entity.get("type") == "pre" for entity in entities)
 
 
