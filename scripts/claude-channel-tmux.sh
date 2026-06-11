@@ -4,6 +4,7 @@ SESSION=${TAKOPI_CLAUDE_CHANNEL_SESSION:-takopi_channel_usegateway}
 WORKDIR=${TAKOPI_CLAUDE_CHANNEL_CWD:-/root/usegateway}
 CHANNEL=${TAKOPI_CLAUDE_CHANNEL_NAME:-takopi}
 RESUME=${TAKOPI_CLAUDE_CHANNEL_RESUME:-none}
+ALLOWED_TOOLS=${TAKOPI_CLAUDE_ALLOWED_TOOLS:-}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CHANNEL_SERVER_DIR=${TAKOPI_CLAUDE_CHANNEL_SERVER_DIR:-${SCRIPT_DIR}/../channel-server}
 
@@ -32,6 +33,18 @@ if [[ -f "${CHANNEL_SERVER_DIR}/package-lock.json" && ! -d "${CHANNEL_SERVER_DIR
 fi
 
 CMD=(claude --dangerously-load-development-channels "server:${CHANNEL}")
+if [[ -n "$ALLOWED_TOOLS" ]]; then
+  CMD+=(--allowedTools "$ALLOWED_TOOLS")
+fi
+case "${TAKOPI_CLAUDE_SKIP_PERMISSIONS:-false}" in
+  1|true|yes|on)
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+      echo "warning: --dangerously-skip-permissions is not supported by Claude Code under root; using allowedTools only" >&2
+    else
+      CMD+=(--dangerously-skip-permissions)
+    fi
+    ;;
+esac
 case "$RESUME" in
   ""|none|false|off)
     ;;
