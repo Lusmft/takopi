@@ -189,6 +189,15 @@ def _extract_live_progress_text(pane: str) -> str:
             continue
         if "gh auth login" in s:
             continue
+        lowered = s.lower()
+        if "how is claude doing this session" in lowered:
+            break
+        if re.search(r"\b1:\s*bad\b", lowered) and re.search(r"\b3:\s*good\b", lowered):
+            break
+        if "calling takopi" in lowered or "called takopi" in lowered:
+            continue
+        if "composing…" in lowered or "composing..." in lowered:
+            continue
         if s.startswith(("●", "⏺")):
             body = re.sub(r"^[●⏺]\s*", "", s)
             lines.append(body)
@@ -684,6 +693,13 @@ def _verbose_action_lines(text: str) -> list[str]:
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line == "↻ Working…":
+            continue
+        lowered = line.lower()
+        if "how is claude doing this session" in lowered:
+            continue
+        if re.search(r"\b1:\s*bad\b", lowered) and re.search(r"\b3:\s*good\b", lowered):
+            continue
+        if "calling takopi" in lowered or "called takopi" in lowered:
             continue
         if re.search(r"\b(?:Worked|Brewed|Baked|Cooked|Crunched|Cogitated|Sautéed|Churned) for \d", line):
             continue

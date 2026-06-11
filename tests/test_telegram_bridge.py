@@ -315,6 +315,31 @@ gh auth login
     assert "gh auth login" not in text
 
 
+def test_extract_live_progress_text_filters_claude_feedback_prompt() -> None:
+    pane = """← takopi: Сделай гит пулл
+
+● git pull не сработал автоматически — у ветки нет upstream.
+
+  Calling takopi… (ctrl+o to expand)
+
+· Composing… (25s · ↑ 863 tokens)
+
+● How is Claude doing this session? (optional)
+  1: Bad    2: Fine   3: Good   0: Dismiss
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+"""
+
+    text = telegram_channel_bridge._extract_live_progress_text(pane)
+
+    assert "git pull не сработал" in text
+    assert "Calling takopi" not in text
+    assert "Composing" not in text
+    assert "How is Claude doing" not in text
+    assert "1: Bad" not in text
+
+
 def test_channel_bridge_status_text_mentions_tmux(monkeypatch) -> None:
     cfg = SimpleNamespace(
         channel_bridge=SimpleNamespace(
