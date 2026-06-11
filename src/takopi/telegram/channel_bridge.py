@@ -29,6 +29,7 @@ logger = get_logger(__name__)
 _MAX_LIVE_PROGRESS_CHARS = min(1600, MAX_BODY_CHARS)
 _CHANNEL_SLASH_COMMANDS = frozenset({"/usage"})
 _CHANNEL_SLASH_TIMEOUT_S = 12.0
+_TELEGRAM_BULLET = "\u2060•"
 
 
 @dataclass(slots=True)
@@ -242,16 +243,16 @@ def _format_usage_overlay_for_telegram(text: str) -> str:
             if current_section in sections_with_usage_bar:
                 continue
             sections_with_usage_bar.add(current_section)
-            lines.append(f"• {line}")
+            lines.append(f"{_TELEGRAM_BULLET} {line}")
             continue
         if line.startswith("Resets ") or "not enabled" in line:
-            lines.append(f"• {line}")
+            lines.append(f"{_TELEGRAM_BULLET} {line}")
             continue
-        if current_section == "Usage by model" and lines and lines[-1].startswith("• "):
+        if current_section == "Usage by model" and lines and lines[-1].startswith(f"{_TELEGRAM_BULLET} "):
             lines[-1] = f"{lines[-1]} {line}"
             continue
         if ":" in line:
-            lines.append(f"• {line}")
+            lines.append(f"{_TELEGRAM_BULLET} {line}")
             continue
         lines.append(line)
     return "  \n".join(lines).strip() or text.strip()

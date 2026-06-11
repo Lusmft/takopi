@@ -35,7 +35,7 @@ from takopi.telegram.bridge import (
     send_with_resume,
 )
 from takopi.telegram.client import BotClient
-from takopi.telegram.render import MAX_BODY_CHARS
+from takopi.telegram.render import MAX_BODY_CHARS, prepare_telegram
 import takopi.telegram.channel_bridge as telegram_channel_bridge
 from takopi.telegram.topic_state import TopicStateStore, resolve_state_path
 from takopi.telegram.chat_sessions import ChatSessionStore, resolve_sessions_path
@@ -44,7 +44,7 @@ from takopi.telegram.engine_overrides import EngineOverrides
 from takopi.context import RunContext
 from takopi.config import ProjectConfig, ProjectsConfig
 from takopi.runner_bridge import ExecBridgeConfig, RunningTask
-from takopi.markdown import MarkdownPresenter
+from takopi.markdown import MarkdownParts, MarkdownPresenter
 from takopi.model import ResumeToken
 from takopi.progress import ProgressTracker
 from takopi.router import AutoRouter, RunnerEntry
@@ -392,16 +392,27 @@ def test_format_usage_overlay_for_telegram_wraps_sections() -> None:
     text = telegram_channel_bridge._format_usage_overlay_for_telegram(raw)
 
     assert "Settings  Status" not in text
-    assert "Session  \n• Total cost: $2.99" in text
-    assert "• Total duration (API): 2m 20s" in text
-    assert "Usage by model  \n• claude-opus-4-7:" in text
+    assert "Session  \n\u2060• Total cost: $2.99" in text
+    assert "\u2060• Total duration (API): 2m 20s" in text
+    assert "Usage by model  \n\u2060• claude-opus-4-7:" in text
     assert "cache write ($2.99)" in text
-    assert "Current session  \n• █████ 10% used  \n• Resets 2pm (UTC)" in text
-    assert "Extra usage  \n• Extra usage not enabled" in text
+    assert "Current session  \n\u2060• █████ 10% used  \n\u2060• Resets 2pm (UTC)" in text
+    assert "Extra usage  \n\u2060• Extra usage not enabled" in text
     assert "█ 6% used" not in text
     assert "Rese s" not in text
     assert "Refresh1" not in text
     assert "8:59pm" not in text
+
+
+def test_format_usage_overlay_keeps_bullets_after_telegram_render() -> None:
+    body = telegram_channel_bridge._format_usage_overlay_for_telegram(
+        "Session\nTotal cost: $2.99"
+    )
+
+    rendered, _entities = prepare_telegram(MarkdownParts(header=body))
+
+    assert "\u2060• Total cost: $2.99" in rendered
+    assert "- Total cost: $2.99" not in rendered
 
 
 @pytest.mark.anyio
