@@ -56,6 +56,7 @@ class LiveProgressRun:
     last_text: str = ""
     verbose_seen: set[str] = field(default_factory=set)
     verbose_sent: int = 0
+    superseded: bool = False
 
 
 _LIVE_PROGRESS_RUNS: dict[tuple[int, int], LiveProgressRun] = {}
@@ -705,6 +706,14 @@ async def channel_bridge_model_command_text(
 
 async def _register_live_progress(chat_id: int, user_msg_id: int, run: LiveProgressRun) -> None:
     async with _LIVE_PROGRESS_LOCK:
+        for source_key, old_run in list(_LIVE_PROGRESS_RUNS.items()):
+            old_chat_id, _old_user_msg_id = source_key
+            if old_chat_id != chat_id:
+                continue
+            old_run.superseded = True
+            old_run.done.set()
+            _LIVE_PROGRESS_RUNS.pop(source_key, None)
+            _LIVE_PROGRESS_BY_PROGRESS.pop((chat_id, old_run.progress_ref.message_id), None)
         source_key = (chat_id, user_msg_id)
         progress_key = (chat_id, run.progress_ref.message_id)
         _LIVE_PROGRESS_RUNS[source_key] = run
@@ -832,6 +841,8 @@ async def _run_live_progress(
                 await asyncio.wait_for(run.done.wait(), timeout=poll_s)
             except TimeoutError:
                 continue
+        if run.superseded:
+            return
         pane = await asyncio.to_thread(_tmux_capture, tmux_session)
         text = _extract_live_progress_text(pane)
         await _maybe_send_verbose_actions(cfg, run=run, text=text)

@@ -855,6 +855,30 @@ def test_live_progress_callback_sends_tmux_choice(monkeypatch):
     assert answers == [("cb1", "sent permission choice 2 to Claude.")]
 
 
+def test_register_live_progress_supersedes_previous_chat_run() -> None:
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS.clear()
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS.clear()
+    old_run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=telegram_channel_bridge.MessageRef(channel_id=123, message_id=10),
+        started_at=0,
+    )
+    new_run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=telegram_channel_bridge.MessageRef(channel_id=123, message_id=11),
+        started_at=1,
+    )
+
+    asyncio.run(telegram_channel_bridge._register_live_progress(123, 1, old_run))
+    asyncio.run(telegram_channel_bridge._register_live_progress(123, 2, new_run))
+
+    expected_runs = {(123, 2): new_run}
+    expected_progress = {(123, 11): (123, 2)}
+
+    assert old_run.superseded is True
+    assert old_run.done.is_set()
+    assert expected_runs == telegram_channel_bridge._LIVE_PROGRESS_RUNS
+    assert expected_progress == telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS
+
+
 def test_telegram_presenter_split_overflow_adds_followups() -> None:
     presenter = TelegramPresenter(message_overflow="split")
     state = ProgressTracker(engine="codex").snapshot()
