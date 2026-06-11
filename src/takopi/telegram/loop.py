@@ -63,6 +63,7 @@ from .topics import (
 )
 from .client import poll_incoming
 from .channel_bridge import (
+    channel_bridge_slash_command_text,
     channel_bridge_status_text,
     forward_to_channel,
     handle_live_progress_choice,
@@ -83,13 +84,6 @@ from .voice import transcribe_voice
 
 logger = get_logger(__name__)
 
-_CHANNEL_USAGE_COMPAT_TEXT = (
-    "`/usage` is a Claude Code TUI command. Takopi Channels cannot execute it "
-    "as a terminal slash-command yet.\n\n"
-    "Current compatibility: channel usage is not available as structured data. "
-    "Use `/status` to check the live Claude Code channel/tmux state."
-)
-
 __all__ = ["poll_updates", "run_main_loop", "send_with_resume"]
 
 ForwardKey = tuple[int, int, int]
@@ -98,6 +92,13 @@ _SEEN_MESSAGES_LIMIT = 2048
 _SEEN_UPDATES_LIMIT = 4096
 
 _handle_file_put_default = handle_file_put_default
+
+
+async def _handle_channel_usage_command(
+    cfg: TelegramBridgeConfig,
+    reply: Callable[..., Awaitable[None]],
+) -> None:
+    await reply(text=await channel_bridge_slash_command_text(cfg, "/usage"))
 
 
 def _chat_session_key(
@@ -192,7 +193,7 @@ def _dispatch_builtin_command(
         return True
 
     if command_id == "usage":
-        task_group.start_soon(partial(reply, text=_CHANNEL_USAGE_COMPAT_TEXT))
+        task_group.start_soon(_handle_channel_usage_command, cfg, reply)
         return True
 
     if command_id == "status":

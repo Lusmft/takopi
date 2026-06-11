@@ -334,6 +334,52 @@ def test_channel_bridge_status_text_mentions_tmux(monkeypatch) -> None:
     assert "visible state: ok" in text
 
 
+def test_capture_channel_slash_command_returns_overlay(monkeypatch) -> None:
+    sent: list[tuple[str, str]] = []
+    escaped: list[str] = []
+    pane = textwrap.dedent(
+        """
+        ❯ /usage
+        Settings  Status   Config   Usage   Stats
+        Current session
+        Total cost: $0.42
+        """
+    )
+
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_slash_command",
+        lambda session, command: sent.append((session, command)) or True,
+    )
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_capture", lambda session: pane)
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_escape",
+        lambda session: escaped.append(session),
+    )
+
+    text = telegram_channel_bridge._capture_channel_slash_command("sess", "/usage")
+
+    assert sent == [("sess", "/usage")]
+    assert escaped == ["sess"]
+    assert "Claude Code /usage:" in text
+    assert "Total cost: $0.42" in text
+
+
+@pytest.mark.anyio
+async def test_channel_bridge_slash_command_requires_tmux_session() -> None:
+    cfg = SimpleNamespace(
+        channel_bridge=SimpleNamespace(
+            enabled=True,
+            tmux_session=None,
+        )
+    )
+
+    text = await telegram_channel_bridge.channel_bridge_slash_command_text(cfg, "/usage")
+
+    assert text == "Claude Code tmux session is not configured."
+
+
 def test_live_progress_choice_requires_permission_prompt(monkeypatch):
     telegram_channel_bridge._LIVE_PROGRESS_RUNS.clear()
     telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS.clear()
@@ -3375,7 +3421,7 @@ async def test_run_main_loop_new_clears_chat_sessions(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_run_main_loop_usage_is_handled_locally() -> None:
+async def test_run_main_loop_usage_uses_channel_slash_passthrough(monkeypatch) -> None:
     transport = FakeTransport()
     bot = FakeBot()
     runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
@@ -3407,11 +3453,18 @@ async def test_run_main_loop_usage_is_handled_locally() -> None:
             chat_type="private",
         )
 
+    async def fake_usage(cfg: TelegramBridgeConfig, command: str) -> str:
+        _ = cfg
+        assert command == "/usage"
+        return "Claude Code /usage:\n\nTotal cost: $0.42"
+
+    monkeypatch.setattr(telegram_loop, "channel_bridge_slash_command_text", fake_usage)
+
     await run_main_loop(cfg, poller)
 
     assert runner.calls == []
     assert transport.send_calls
-    assert "Claude Code TUI command" in transport.send_calls[-1]["message"].text
+    assert "Total cost: $0.42" in transport.send_calls[-1]["message"].text
 
 
 @pytest.mark.anyio

@@ -15,7 +15,11 @@ import httpx
 from ..context import RunContext
 from ..logging import get_logger
 from ..markdown import MarkdownParts
-from ..runners.claude import _normalize_interactive_text
+from ..runners.claude import (
+    _format_interactive_slash_overlay,
+    _is_interactive_slash_overlay,
+    _normalize_interactive_text,
+)
 from ..transport import MessageRef, RenderedMessage, SendOptions
 from .bridge import TelegramBridgeConfig, send_plain
 from .render import MAX_BODY_CHARS, prepare_telegram, prepare_telegram_multi
@@ -23,6 +27,8 @@ from .render import MAX_BODY_CHARS, prepare_telegram, prepare_telegram_multi
 logger = get_logger(__name__)
 
 _MAX_LIVE_PROGRESS_CHARS = min(1600, MAX_BODY_CHARS)
+_CHANNEL_SLASH_COMMANDS = frozenset({"/usage"})
+_CHANNEL_SLASH_TIMEOUT_S = 12.0
 
 
 @dataclass(slots=True)
@@ -93,6 +99,25 @@ def _tmux_send_choice(session: str, choice: str) -> bool:
         stderr=subprocess.DEVNULL,
     )
     return proc.returncode == 0
+
+
+def _tmux_send_slash_command(session: str, command: str) -> bool:
+    proc = subprocess.run(
+        ["tmux", "send-keys", "-t", session, "C-u", command, "Enter"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc.returncode == 0
+
+
+def _tmux_send_escape(session: str) -> None:
+    subprocess.run(
+        ["tmux", "send-keys", "-t", session, "Escape"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def _permission_choice(text: str | None) -> str | None:
@@ -168,6 +193,54 @@ def channel_bridge_status_text(cfg: TelegramBridgeConfig) -> str:
         else:
             lines.append("tmux capture: unavailable")
     return "\n".join(lines)
+
+
+def _format_channel_slash_result(command: str, text: str) -> str:
+    body = text.strip()
+    if not body:
+        body = "Claude Code returned an empty response."
+    return f"Claude Code {command}:\n\n{body}"
+
+
+def _capture_channel_slash_command(session: str, command: str) -> str:
+    sent = _tmux_send_slash_command(session, command)
+    if not sent:
+        return f"failed to send {command} to Claude tmux session."
+
+    deadline = time.time() + _CHANNEL_SLASH_TIMEOUT_S
+    last_text = ""
+    while time.time() < deadline:
+        pane = _tmux_capture(session)
+        if _is_interactive_slash_overlay(command, pane):
+            text = _format_interactive_slash_overlay(command, pane)
+            _tmux_send_escape(session)
+            return _format_channel_slash_result(command, text)
+        live_text = _extract_live_progress_text(pane)
+        if live_text and live_text != "↻ Working…":
+            last_text = live_text
+        time.sleep(0.5)
+    if last_text:
+        return _format_channel_slash_result(command, last_text)
+    return f"timed out waiting for Claude Code {command} output."
+
+
+async def channel_bridge_slash_command_text(
+    cfg: TelegramBridgeConfig,
+    command: str,
+) -> str:
+    normalized = command.strip().lower()
+    if normalized not in _CHANNEL_SLASH_COMMANDS:
+        return f"Claude Code slash command is not allowlisted: {command}"
+    bridge = cfg.channel_bridge
+    if not bridge.enabled:
+        return "channel bridge is disabled."
+    if not bridge.tmux_session:
+        return "Claude Code tmux session is not configured."
+    return await asyncio.to_thread(
+        _capture_channel_slash_command,
+        bridge.tmux_session,
+        normalized,
+    )
 
 
 async def _register_live_progress(chat_id: int, user_msg_id: int, run: LiveProgressRun) -> None:
