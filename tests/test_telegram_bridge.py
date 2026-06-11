@@ -19,6 +19,7 @@ import takopi.telegram.topics as telegram_topics
 from takopi.directives import parse_directives
 from takopi.telegram.api_models import Chat, File, ForumTopic, Message, Update, User
 from takopi.settings import (
+    TelegramChannelBridgeProjectSettings,
     TelegramChannelBridgeSettings,
     TelegramFilesSettings,
     TelegramTopicsSettings,
@@ -722,6 +723,54 @@ async def test_channel_bridge_slash_command_requires_tmux_session() -> None:
     text = await telegram_channel_bridge.channel_bridge_slash_command_text(cfg, "/usage")
 
     assert text == "Claude Code tmux session is not configured."
+
+
+def test_channel_route_uses_project_specific_endpoint() -> None:
+    cfg = SimpleNamespace(
+        channel_bridge=TelegramChannelBridgeSettings(
+            inbound_url="http://127.0.0.1:8788/push",
+            tmux_session="takopi_channel_usegateway",
+            projects={
+                "project": TelegramChannelBridgeProjectSettings(
+                    inbound_url="http://127.0.0.1:8791/push",
+                    tmux_session="takopi_channel_project",
+                )
+            },
+        )
+    )
+
+    route = telegram_channel_bridge._channel_route(
+        cfg,
+        RunContext(project="project"),
+    )
+
+    assert route.project == "project"
+    assert route.inbound_url == "http://127.0.0.1:8791/push"
+    assert route.tmux_session == "takopi_channel_project"
+
+
+def test_channel_route_falls_back_to_default_endpoint() -> None:
+    cfg = SimpleNamespace(
+        channel_bridge=TelegramChannelBridgeSettings(
+            inbound_url="http://127.0.0.1:8788/push",
+            tmux_session="takopi_channel_usegateway",
+            projects={
+                "project": TelegramChannelBridgeProjectSettings(
+                    inbound_url="http://127.0.0.1:8791/push",
+                    tmux_session="takopi_channel_project",
+                )
+            },
+        )
+    )
+
+    route = telegram_channel_bridge._channel_route(
+        cfg,
+        RunContext(project="usegateway"),
+    )
+
+    assert route.project == "usegateway"
+    assert route.inbound_url == "http://127.0.0.1:8788/push"
+    assert route.tmux_session == "takopi_channel_usegateway"
 
 
 def test_live_progress_choice_requires_permission_prompt(monkeypatch):

@@ -66,8 +66,10 @@ printf -v CMD_TEXT "%q " "${CMD[@]}"
 
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 tmux new-session -d -s "$SESSION" -c "$WORKDIR" "$CMD_TEXT"
-# Claude Code currently prompts once per launch for development channels.
-# Confirm the local-development warning so the channel server actually starts.
+# Fresh project sessions can prompt first for MCP server trust, then for
+# development channels. Confirm both so the channel server actually starts.
+sleep "${TAKOPI_CLAUDE_CHANNEL_CONFIRM_DELAY:-3}"
+tmux send-keys -t "$SESSION" Enter || true
 sleep "${TAKOPI_CLAUDE_CHANNEL_CONFIRM_DELAY:-3}"
 tmux send-keys -t "$SESSION" Enter || true
 

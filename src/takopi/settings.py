@@ -99,6 +99,13 @@ class TelegramFilesSettings(BaseModel):
         return value
 
 
+class TelegramChannelBridgeProjectSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    inbound_url: NonEmptyStr
+    tmux_session: NonEmptyStr | None = None
+
+
 class TelegramChannelBridgeSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -111,6 +118,9 @@ class TelegramChannelBridgeSettings(BaseModel):
     live_progress: bool = False
     tmux_session: NonEmptyStr | None = None
     poll_interval_s: float = Field(default=1.0, ge=0.2, le=10.0)
+    projects: dict[NonEmptyStr, TelegramChannelBridgeProjectSettings] = Field(
+        default_factory=dict
+    )
 
 
 class TelegramTransportSettings(BaseModel):

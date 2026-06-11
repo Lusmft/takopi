@@ -45,6 +45,13 @@ _PERMISSION_MARKUP = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class ChannelBridgeRoute:
+    project: str
+    inbound_url: str
+    tmux_session: str | None
+
+
 @dataclass(slots=True)
 class LiveProgressRun:
     progress_ref: MessageRef
@@ -52,6 +59,7 @@ class LiveProgressRun:
     chat_id: int = 0
     user_msg_id: int = 0
     thread_id: int | None = None
+    tmux_session: str | None = None
     verbose: bool = False
     done: asyncio.Event = field(default_factory=asyncio.Event)
     last_text: str = ""
@@ -81,6 +89,29 @@ def _render_channel_reply(text: str) -> RenderedMessage:
             for followup_text, followup_entities in payloads[1:]
         ]
     return RenderedMessage(text=first_text, extra=extra)
+
+
+def _bridge_project(context: RunContext | None) -> str:
+    project = getattr(context, "project", "") if context is not None else ""
+    return str(project or "")
+
+
+def _channel_route(cfg: TelegramBridgeConfig, context: RunContext | None) -> ChannelBridgeRoute:
+    bridge = cfg.channel_bridge
+    project = _bridge_project(context)
+    configured = getattr(bridge, "projects", {}) or {}
+    route = configured.get(project) if project else None
+    if route is None:
+        return ChannelBridgeRoute(
+            project=project,
+            inbound_url=str(bridge.inbound_url),
+            tmux_session=bridge.tmux_session,
+        )
+    return ChannelBridgeRoute(
+        project=project,
+        inbound_url=str(route.inbound_url),
+        tmux_session=route.tmux_session or bridge.tmux_session,
+    )
 
 
 def _render_live_progress(
@@ -339,6 +370,7 @@ def _extract_live_progress_text(pane: str) -> str:
 
 def channel_bridge_status_text(cfg: TelegramBridgeConfig) -> str:
     bridge = cfg.channel_bridge
+    routes = getattr(bridge, "projects", {}) or {}
     lines = [
         "Takopi channel bridge:",
         f"enabled: {'yes' if bridge.enabled else 'no'}",
@@ -347,6 +379,10 @@ def channel_bridge_status_text(cfg: TelegramBridgeConfig) -> str:
         f"live progress: {'yes' if bridge.live_progress else 'no'}",
         f"tmux: {bridge.tmux_session or '-'}",
     ]
+    for project, route in sorted(routes.items()):
+        lines.append(
+            f"route {project}: {route.inbound_url} / tmux {route.tmux_session or bridge.tmux_session or '-'}"
+        )
     if bridge.tmux_session:
         pane = _tmux_capture(bridge.tmux_session)
         if pane:
@@ -754,7 +790,7 @@ async def _send_live_progress_choice(
     if run is None:
         return "no active Claude run for this button."
 
-    session = cfg.channel_bridge.tmux_session
+    session = run.tmux_session or cfg.channel_bridge.tmux_session
     if not session:
         return "live progress tmux session is not configured."
 
@@ -945,10 +981,12 @@ async def maybe_start_live_progress(
     user_msg_id: int,
     thread_id: int | None,
     engine: str | None,
+    tmux_session: str | None = None,
     verbose: bool = False,
 ) -> None:
     bridge = cfg.channel_bridge
-    if not bridge.live_progress or not bridge.tmux_session:
+    session = tmux_session or bridge.tmux_session
+    if not bridge.live_progress or not session:
         return
     sent = await cfg.exec_cfg.transport.send(
         channel_id=chat_id,
@@ -972,6 +1010,7 @@ async def maybe_start_live_progress(
         chat_id=chat_id,
         user_msg_id=user_msg_id,
         thread_id=thread_id,
+        tmux_session=session,
         verbose=verbose,
     )
     await _register_live_progress(chat_id, user_msg_id, run)
@@ -979,7 +1018,7 @@ async def maybe_start_live_progress(
         _run_live_progress(
             cfg,
             run=run,
-            tmux_session=bridge.tmux_session,
+            tmux_session=session,
             engine=engine or "claude",
         )
     )
@@ -1009,6 +1048,7 @@ async def forward_to_channel(
     verbose: bool = False,
 ) -> bool:
     bridge = cfg.channel_bridge
+    route = _channel_route(cfg, context)
     headers: dict[str, str] = {}
     if bridge.shared_secret:
         headers["authorization"] = f"Bearer {bridge.shared_secret}"
@@ -1024,7 +1064,7 @@ async def forward_to_channel(
     }
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(bridge.inbound_url, json=payload, headers=headers)
+            resp = await client.post(route.inbound_url, json=payload, headers=headers)
             resp.raise_for_status()
     except httpx.HTTPError as exc:
         logger.warning("telegram.channel_bridge.forward_failed", error=str(exc))
@@ -1042,6 +1082,7 @@ async def forward_to_channel(
         user_msg_id=user_msg_id,
         thread_id=thread_id,
         engine=engine,
+        tmux_session=route.tmux_session,
         verbose=verbose,
     )
     if bridge.send_progress:
