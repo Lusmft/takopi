@@ -209,7 +209,8 @@ def _latest_takopi_segment(pane: str) -> str:
 
 
 def _shorten_live_progress(text: str, *, width: int = 180) -> str:
-    collapsed = re.sub(r"\s+", " ", text.strip())
+    cleaned = re.sub(r"\s*\(ctrl\+o to expand\)", "", text.strip(), flags=re.IGNORECASE)
+    collapsed = re.sub(r"\s+", " ", cleaned)
     if len(collapsed) <= width:
         return collapsed
     return f"{collapsed[: width - 1]}…"
@@ -301,6 +302,8 @@ def _extract_live_progress_text(pane: str) -> str:
         if "gh auth login" in s:
             continue
         lowered = s.lower()
+        if lowered.startswith("tip:") or " tip: " in lowered:
+            continue
         if "how is claude doing this session" in lowered:
             break
         if re.search(r"\b1:\s*bad\b", lowered) and re.search(r"\b3:\s*good\b", lowered):
@@ -893,6 +896,8 @@ def _verbose_action_lines(text: str) -> list[str]:
         if not line or line == "↻ Working…":
             continue
         lowered = line.lower()
+        if lowered.startswith("tip:") or " tip: " in lowered:
+            continue
         if "how is claude doing this session" in lowered:
             continue
         if re.search(r"\b1:\s*bad\b", lowered) and re.search(r"\b3:\s*good\b", lowered):

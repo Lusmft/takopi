@@ -394,6 +394,28 @@ def test_extract_live_progress_text_filters_claude_feedback_prompt() -> None:
     assert "1: Bad" not in text
 
 
+def test_extract_live_progress_text_filters_tips_and_ctrl_o_chrome() -> None:
+    pane = """← takopi: статус
+
+● Bash(git status -sb)
+  ⎿  ## release/1_23_13
+     ?? artifacts/
+     … +3 lines (ctrl+o to expand)
+
+✻ Coalescing… (9s · ↑ 469 tokens)
+  ⎿  Tip: Use ctrl+v to paste images from your clipboard
+
+❯
+"""
+
+    text = telegram_channel_bridge._extract_live_progress_text(pane)
+
+    assert "… +3 lines" in text
+    assert "ctrl+o to expand" not in text
+    assert "Tip:" not in text
+    assert "ctrl+v" not in text
+
+
 def test_channel_bridge_status_text_mentions_tmux(monkeypatch) -> None:
     cfg = SimpleNamespace(
         channel_bridge=SimpleNamespace(
