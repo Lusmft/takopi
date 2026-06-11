@@ -427,7 +427,7 @@ def _format_stats_overlay_for_telegram(text: str) -> str:
     lines: list[str] = []
     if graph_lines:
         graph = textwrap.dedent("\n".join(graph_lines)).strip("\n")
-        lines.append(f"```text\n{graph}\n```")
+        lines.append(f"```\n{graph}\n```")
     if graph_lines and detail_lines:
         details = "  \n".join(detail_lines)
         return f"{lines[0]}\n\n{details}".strip()

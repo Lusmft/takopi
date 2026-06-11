@@ -464,7 +464,7 @@ def test_format_stats_overlay_for_telegram_splits_metrics() -> None:
     text = telegram_channel_bridge._format_stats_overlay_for_telegram(raw)
 
     assert "Settings  Status" not in text
-    assert text.startswith("```text\n")
+    assert text.startswith("```\n")
     assert "Overview Models" in text
     assert "Mon ·······▒▒▓█" in text
     assert "Less ░ ▒ ▓ █ More" in text
