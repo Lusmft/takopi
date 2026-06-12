@@ -370,6 +370,39 @@ def test_extract_live_progress_text_hides_permission_overlay() -> None:
     assert "QA tag not in HEAD" not in text
 
 
+def test_extract_live_progress_text_formats_mcp_permission_overlay() -> None:
+    pane = '''← takopi: привет, что это за проект?
+
+  Listed 1 directory (ctrl+o to expand)
+
+● Calling takopi… (ctrl+o to expand)
+
+────────────────────────────────────────────────────────────────────────────────
+ Tool use
+
+   takopi - reply(chat_id: "8081295168", reply_to_message_id: "1708", text:
+   "Привет! Это **FastAPI Admin Pro** — админ-панель.\\n\\n**Стек:**\\n-
+   FastAPI + Tortoise ORM\\n- UI на Tabler\\n\\nЧто хочешь с ним сделать?") (MCP)
+   Send a text reply back to the Telegram chat through Takopi.
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for takopi - reply commands in
+      /root/projects/fastapi-admin-pro
+   3. No
+
+ Esc to cancel · Tab to amend
+'''
+
+    text = telegram_channel_bridge._extract_live_progress_text(pane)
+
+    assert "· MCP: takopi.reply" in text
+    assert "↳ waiting for permission" in text
+    assert "FastAPI Admin Pro" not in text
+    assert "Do you want to proceed" not in text
+    assert "1. Yes" not in text
+
+
 def test_extract_live_progress_text_filters_claude_feedback_prompt() -> None:
     pane = """← takopi: Сделай гит пулл
 

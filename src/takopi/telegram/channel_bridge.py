@@ -295,7 +295,20 @@ def _format_live_tool_result(text: str) -> str:
     return f"  ↳ {body}"
 
 
+def _format_live_mcp_tool_line(text: str) -> str | None:
+    match = re.match(
+        r"^(?P<server>[A-Za-z0-9_-]+)\s+-\s+(?P<tool>[A-Za-z0-9_.-]+)\(",
+        text,
+    )
+    if match is None:
+        return None
+    return f"{_TELEGRAM_BULLET} MCP: {match.group('server')}.{match.group('tool')}"
+
+
 def _format_live_progress_line(text: str) -> list[str]:
+    formatted_mcp_tool = _format_live_mcp_tool_line(text)
+    if formatted_mcp_tool is not None:
+        return [formatted_mcp_tool]
     formatted_tool = _format_live_tool_line(text)
     if formatted_tool is not None:
         return formatted_tool.splitlines()
@@ -344,7 +357,16 @@ def _extract_live_progress_text(pane: str) -> str:
         if "composing…" in lowered or "composing..." in lowered:
             continue
         if _is_permission_overlay_line(s):
+            if not any("waiting for permission" in line for line in lines[-2:]):
+                lines.append("  ↳ waiting for permission")
             break
+        if s == "Tool use":
+            continue
+        formatted_mcp_tool = _format_live_mcp_tool_line(s)
+        if formatted_mcp_tool is not None:
+            lines.append(formatted_mcp_tool)
+            skip_wrapped_tool_continuation = True
+            continue
         if skip_wrapped_tool_continuation and not s.startswith(("⎿", "●", "⏺", "✻")):
             continue
         if s.startswith(("●", "⏺")):
