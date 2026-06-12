@@ -4,7 +4,7 @@ SESSION=${TAKOPI_CLAUDE_CHANNEL_SESSION:-takopi_channel_usegateway}
 WORKDIR=${TAKOPI_CLAUDE_CHANNEL_CWD:-/root/usegateway}
 CHANNEL=${TAKOPI_CLAUDE_CHANNEL_NAME:-takopi}
 RESUME=${TAKOPI_CLAUDE_CHANNEL_RESUME:-none}
-ALLOWED_TOOLS=${TAKOPI_CLAUDE_ALLOWED_TOOLS:-}
+ALLOWED_TOOLS=${TAKOPI_CLAUDE_ALLOWED_TOOLS:-Bash(*),Read(*),Write(*),Edit(*),WebFetch(*),mcp__openclaw__*,mcp__takopi__*}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CHANNEL_SERVER_DIR=${TAKOPI_CLAUDE_CHANNEL_SERVER_DIR:-${SCRIPT_DIR}/../channel-server}
 
