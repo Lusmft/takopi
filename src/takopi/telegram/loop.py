@@ -86,6 +86,14 @@ _SEEN_UPDATES_LIMIT = 4096
 
 _handle_file_put_default = handle_file_put_default
 
+_USAGE_COMPAT_TEXT = (
+    "`/usage` from Claude Code CLI is not proxied through Telegram.\n"
+    "For Claude runs, usage is already appended to the final footer when available "
+    "(tokens, cost, turns, duration).\n"
+    "Use `/new` to reset the current thread; in Telegram transport `/compact` "
+    "is treated as the same reset action."
+)
+
 
 def _chat_session_key(
     msg: TelegramIncomingMessage, *, store: ChatSessionStore | None
@@ -203,6 +211,10 @@ def _dispatch_builtin_command(
                 chat_prefs,
             )
         task_group.start_soon(handler)
+        return True
+
+    if command_id == "usage":
+        task_group.start_soon(reply, text=_USAGE_COMPAT_TEXT)
         return True
 
     if cfg.topics.enabled and topic_store is not None:
@@ -1677,7 +1689,7 @@ async def run_main_loop(
 
                 command_id = classification.command_id
                 args_text = classification.args_text
-                if command_id == "new":
+                if command_id in {"new", "compact"}:
                     forward_coalescer.cancel(forward_key)
                     if state.topic_store is not None and topic_key is not None:
                         tg.start_soon(
