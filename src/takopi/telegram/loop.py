@@ -1451,6 +1451,7 @@ async def run_main_loop(
                     resolved=resolved,
                     ambient_context=ambient_context,
                     topic_key=topic_key,
+                    chat_id=msg.chat_id,
                     chat_project=chat_project,
                     reply=reply,
                 )
@@ -1480,6 +1481,7 @@ async def run_main_loop(
                 resolved: ResolvedMessage,
                 ambient_context: RunContext | None,
                 topic_key: tuple[int, int] | None,
+                chat_id: int,
                 chat_project: str | None,
                 reply: Callable[..., Awaitable[None]],
             ) -> tuple[RunContext | None, bool]:
@@ -1498,6 +1500,14 @@ async def run_main_loop(
                         thread_id=topic_key[1],
                         context=resolved.context,
                     )
+                    effective_context = resolved.context
+                if (
+                    state.chat_prefs is not None
+                    and topic_key is None
+                    and resolved.context is not None
+                    and resolved.context_source in {"directives", "reply_ctx"}
+                ):
+                    await state.chat_prefs.set_context(chat_id, resolved.context)
                     effective_context = resolved.context
                 if (
                     state.topic_store is not None
@@ -1730,6 +1740,7 @@ async def run_main_loop(
                     resolved=resolved,
                     ambient_context=pending.ambient_context,
                     topic_key=pending.topic_key,
+                    chat_id=msg.chat_id,
                     chat_project=pending.chat_project,
                     reply=reply,
                 )

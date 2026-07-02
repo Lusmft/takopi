@@ -4655,6 +4655,91 @@ async def test_run_main_loop_model_uses_channel_passthrough(monkeypatch) -> None
 
 
 @pytest.mark.anyio
+async def test_run_main_loop_project_directive_becomes_chat_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine="claude")
+    projects = ProjectsConfig(
+        projects={
+            "osintchecker": ProjectConfig(
+                alias="osintchecker",
+                path=tmp_path / "osintchecker",
+                worktrees_dir=Path(".worktrees"),
+                default_engine="claude",
+            ),
+            "usegateway": ProjectConfig(
+                alias="usegateway",
+                path=tmp_path / "usegateway",
+                worktrees_dir=Path(".worktrees"),
+                default_engine="claude",
+            ),
+        },
+        default_project=None,
+    )
+    runtime = TransportRuntime(
+        router=_make_router(runner),
+        projects=projects,
+        config_path=tmp_path / "takopi.toml",
+    )
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="chat",
+    )
+    cfg.channel_bridge.enabled = True
+    seen_contexts: list[RunContext | None] = []
+    first_forwarded = anyio.Event()
+
+    async def fake_forward_to_channel(_cfg, **kwargs) -> None:
+        seen_contexts.append(kwargs["context"])
+        first_forwarded.set()
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/osintchecker привет",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+        await first_forwarded.wait()
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=2,
+            text="ты в какой папке работаешь?",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    monkeypatch.setattr(telegram_loop, "forward_to_channel", fake_forward_to_channel)
+    monkeypatch.setattr(telegram_loop, "run_reply_server", _noop_reply_server)
+
+    await run_main_loop(cfg, poller)
+
+    assert seen_contexts == [
+        RunContext(project="osintchecker", branch=None),
+        RunContext(project="osintchecker", branch=None),
+    ]
+
+
+@pytest.mark.anyio
 async def test_run_main_loop_verbose_on_updates_chat_prefs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
