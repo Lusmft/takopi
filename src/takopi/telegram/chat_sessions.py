@@ -5,6 +5,7 @@ from pathlib import Path
 import msgspec
 
 from ..logging import get_logger
+from ..context import RunContext
 from ..model import ResumeToken
 from .state_store import JsonStateStore
 
@@ -16,6 +17,8 @@ STATE_FILENAME = "telegram_chat_sessions_state.json"
 
 class _SessionState(msgspec.Struct, forbid_unknown_fields=False):
     resume: str
+    project: str | None = None
+    branch: str | None = None
 
 
 class _ChatState(msgspec.Struct, forbid_unknown_fields=False):
@@ -53,7 +56,11 @@ class ChatSessionStore(JsonStateStore[_ChatSessionsState]):
         )
 
     async def get_session_resume(
-        self, chat_id: int, owner_id: int | None, engine: str
+        self,
+        chat_id: int,
+        owner_id: int | None,
+        engine: str,
+        context: RunContext | None = None,
     ) -> ResumeToken | None:
         async with self._lock:
             self._reload_locked_if_needed()
@@ -62,6 +69,8 @@ class ChatSessionStore(JsonStateStore[_ChatSessionsState]):
                 return None
             entry = chat.sessions.get(engine)
             if entry is None or not entry.resume:
+                return None
+            if not _session_context_matches(entry, context):
                 return None
             return ResumeToken(engine=engine, value=entry.resume)
 
@@ -80,14 +89,22 @@ class ChatSessionStore(JsonStateStore[_ChatSessionsState]):
             return cleared
 
     async def set_session_resume(
-        self, chat_id: int, owner_id: int | None, token: ResumeToken
+        self,
+        chat_id: int,
+        owner_id: int | None,
+        token: ResumeToken,
+        context: RunContext | None = None,
     ) -> None:
         async with self._lock:
             self._reload_locked_if_needed()
             if self._state.cwd is None:
                 self._state.cwd = str(Path.cwd().expanduser().resolve())
             chat = self._ensure_chat_locked(chat_id, owner_id)
-            chat.sessions[token.engine] = _SessionState(resume=token.value)
+            chat.sessions[token.engine] = _SessionState(
+                resume=token.value,
+                project=context.project if context is not None else None,
+                branch=context.branch if context is not None else None,
+            )
             self._save_locked()
 
     async def clear_sessions(self, chat_id: int, owner_id: int | None) -> None:
@@ -110,3 +127,13 @@ class ChatSessionStore(JsonStateStore[_ChatSessionsState]):
         entry = _ChatState()
         self._state.chats[key] = entry
         return entry
+
+
+def _session_context_matches(
+    entry: _SessionState, context: RunContext | None
+) -> bool:
+    if context is None or context.project is None:
+        return True
+    if entry.project != context.project:
+        return False
+    return context.branch is None or entry.branch == context.branch

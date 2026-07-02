@@ -101,6 +101,35 @@ def test_resolve_message_reply_ctx_overrides_ambient() -> None:
     assert resolved.context_source == "reply_ctx"
 
 
+def test_resolve_message_reply_working_folder_restores_context(tmp_path: Path) -> None:
+    project_dir = tmp_path / "osintchecker"
+    project_dir.mkdir()
+    codex = ScriptRunner([Return(answer="ok")], engine="codex")
+    router = AutoRouter(
+        entries=[RunnerEntry(engine=codex.engine, runner=codex)],
+        default_engine=codex.engine,
+    )
+    projects = ProjectsConfig(
+        projects={
+            "osintchecker": ProjectConfig(
+                alias="osintchecker",
+                path=project_dir,
+                worktrees_dir=Path(".worktrees"),
+            )
+        },
+        default_project=None,
+    )
+    runtime = TransportRuntime(router=router, projects=projects)
+
+    resolved = runtime.resolve_message(
+        text="в какой папке ты работаешь?",
+        reply_text=f"Рабочая папка: `{project_dir}`\nВетка: main",
+    )
+
+    assert resolved.context == RunContext(project="osintchecker", branch="main")
+    assert resolved.context_source == "reply_ctx"
+
+
 def test_resolve_message_directives_override_ambient() -> None:
     runtime = _make_runtime()
     ambient = RunContext(project="proj", branch="feat/ambient")

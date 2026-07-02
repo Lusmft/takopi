@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from takopi.model import ResumeToken
+from takopi.context import RunContext
 from takopi.telegram.chat_sessions import ChatSessionStore
 
 
@@ -67,3 +68,28 @@ async def test_chat_sessions_store_drops_sessions_on_cwd_change(
     store3 = ChatSessionStore(path)
     assert await store3.sync_startup_cwd(Path.cwd()) is True
     assert await store3.get_session_resume(1, None, "codex") is None
+
+
+@pytest.mark.anyio
+async def test_chat_sessions_store_filters_by_context(tmp_path) -> None:
+    path = tmp_path / "telegram_chat_sessions_state.json"
+    store = ChatSessionStore(path)
+    await store.set_session_resume(
+        1,
+        None,
+        ResumeToken(engine="codex", value="usegateway-token"),
+        RunContext(project="usegateway", branch="release"),
+    )
+
+    assert await store.get_session_resume(
+        1,
+        None,
+        "codex",
+        RunContext(project="osintchecker", branch="main"),
+    ) is None
+    assert await store.get_session_resume(
+        1,
+        None,
+        "codex",
+        RunContext(project="usegateway", branch="release"),
+    ) == ResumeToken(engine="codex", value="usegateway-token")
