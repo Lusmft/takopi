@@ -853,6 +853,7 @@ class ResumeResolver:
         topic_key: tuple[int, int] | None,
         engine_for_session: EngineId,
         prompt_text: str,
+        context: RunContext | None,
     ) -> ResumeDecision:
         if resume_token is not None:
             return ResumeDecision(
@@ -892,6 +893,7 @@ class ResumeResolver:
                 chat_session_key[0],
                 chat_session_key[1],
                 engine_for_session,
+                context,
             )
             if stored is not None:
                 resume_token = stored
@@ -1294,6 +1296,7 @@ async def run_main_loop(
                 base_cb: Callable[[ResumeToken, anyio.Event], Awaitable[None]] | None,
                 topic_key: tuple[int, int] | None,
                 chat_session_key: tuple[int, int | None] | None,
+                context: RunContext | None,
             ) -> Callable[[ResumeToken, anyio.Event], Awaitable[None]] | None:
                 if base_cb is None and topic_key is None and chat_session_key is None:
                     return None
@@ -1310,7 +1313,10 @@ async def run_main_loop(
                         and chat_session_key is not None
                     ):
                         await state.chat_session_store.set_session_resume(
-                            chat_session_key[0], chat_session_key[1], token
+                            chat_session_key[0],
+                            chat_session_key[1],
+                            token,
+                            context,
                         )
 
                 return _wrapped
@@ -1373,7 +1379,10 @@ async def run_main_loop(
                     context=context,
                     reply_ref=reply_ref,
                     on_thread_known=wrap_on_thread_known(
-                        on_thread_known, topic_key, chat_session_key
+                        on_thread_known,
+                        topic_key,
+                        chat_session_key,
+                        context,
                     ),
                     engine_override=engine_override,
                     thread_id=thread_id,
@@ -1543,6 +1552,7 @@ async def run_main_loop(
                     topic_key=topic_key,
                     engine_for_session=engine_resolution.engine,
                     prompt_text=prompt_text,
+                    context=context,
                 )
                 if resume_decision.handled_by_running_task:
                     return
@@ -2093,6 +2103,7 @@ async def run_main_loop(
                                 scheduler.note_thread_known,
                                 topic_key,
                                 chat_session_key,
+                                ambient_context,
                             ),
                             stateful_mode,
                             default_engine_override,
@@ -2272,6 +2283,7 @@ async def run_main_loop(
                                     scheduler.note_thread_known,
                                     ctx.topic_key,
                                     ctx.chat_session_key,
+                                    ctx.ambient_context,
                                 ),
                                 ctx.stateful_mode,
                                 default_engine_override,

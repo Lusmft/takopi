@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
+from pathlib import Path
 
 from .config import ProjectsConfig
 from .context import RunContext
@@ -131,7 +133,40 @@ def parse_context_line(
                 "add it back to your config"
             )
         ctx = RunContext(project=project_key, branch=branch)
-    return ctx
+    return ctx or _parse_context_from_working_directory(text, projects=projects)
+
+
+_WORKING_DIRECTORY_RE = re.compile(
+    r"(?im)(?:working\s+(?:directory|folder|cwd)|рабочая\s+папка)\s*[:：]\s*`?([^\s`]+)"
+)
+_BRANCH_RE = re.compile(r"(?im)(?:branch|ветка)\s*[:：]\s*`?([^\s`]+)")
+
+
+def _parse_context_from_working_directory(
+    text: str, *, projects: ProjectsConfig
+) -> RunContext | None:
+    match = _WORKING_DIRECTORY_RE.search(text)
+    if match is None:
+        return None
+    raw_path = match.group(1).strip().rstrip(".,;")
+    if not raw_path:
+        return None
+    try:
+        cwd = Path(raw_path).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+
+    for key, project in projects.projects.items():
+        project_path = project.path.expanduser().resolve(strict=False)
+        if cwd == project_path:
+            branch_match = _BRANCH_RE.search(text)
+            branch = (
+                branch_match.group(1).strip().rstrip(".,;")
+                if branch_match
+                else None
+            )
+            return RunContext(project=key, branch=branch or None)
+    return None
 
 
 def format_context_line(
