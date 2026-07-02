@@ -662,7 +662,7 @@ async def handle_message(
         logger.info("handle.after_completed.start")
         try:
             await after_completed(incoming, progress_tracker, cwd)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "handle.after_completed.failed",
                 error=str(exc),

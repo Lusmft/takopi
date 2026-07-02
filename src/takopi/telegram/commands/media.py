@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
 
-from ...attachments import format_attachment_block
+from ...attachments import PromptAttachment, format_attachment_block
 from ...context import RunContext
 from ...directives import DirectiveError
 from ...transport_runtime import ResolvedMessage
@@ -17,13 +17,24 @@ from .file_transfer import (
     _format_file_put_failures,
     _handle_file_put_group,
     _save_file_put_group,
-    _stage_file_put_group,
 )
 from .parse import _parse_slash_command
 from .reply import make_reply
 
 if TYPE_CHECKING:
     from ..bridge import TelegramBridgeConfig
+
+
+def _attachment_for_saved_upload(
+    *,
+    path,
+    mime_type: str | None,
+) -> PromptAttachment:
+    return PromptAttachment(
+        kind="image" if mime_type is not None and mime_type.startswith("image/") else "document",
+        path=path,
+        mime_type=mime_type,
+    )
 
 
 async def _handle_media_group(
@@ -94,29 +105,44 @@ async def _handle_media_group(
                 )
             if resolved is None:
                 return
-            staged_group = await _stage_file_put_group(
+            saved_group = await _save_file_put_group(
                 cfg,
                 command_msg,
+                "",
                 ordered,
+                resolved.context,
+                topic_store,
             )
-            if staged_group is None:
+            if saved_group is None:
                 return
-            if not staged_group.staged:
-                failure_text = _format_file_put_failures(staged_group.failed)
-                text = "failed to stage files."
+            if not saved_group.saved:
+                failure_text = _format_file_put_failures(saved_group.failed)
+                text = "failed to upload files."
                 if failure_text is not None:
                     text = f"{text}\n\n{failure_text}"
                 await reply(text=text)
                 return
-            if staged_group.failed:
-                failure_text = _format_file_put_failures(staged_group.failed)
+            if saved_group.failed:
+                failure_text = _format_file_put_failures(saved_group.failed)
                 if failure_text is not None:
                     await reply(text=f"some files failed to upload.\n\n{failure_text}")
             if run_prompt is None:
                 await reply(text=FILE_PUT_USAGE)
                 return
+            documents = [item.document for item in ordered if item.document is not None]
+            attachments: list[PromptAttachment] = []
+            for index, item in enumerate(saved_group.saved):
+                if item.rel_path is None:
+                    continue
+                document = documents[index] if index < len(documents) else None
+                attachments.append(
+                    _attachment_for_saved_upload(
+                        path=item.rel_path,
+                        mime_type=document.mime_type if document is not None else None,
+                    )
+                )
             prompt = format_attachment_block(
-                [item.attachment for item in staged_group.staged],
+                attachments,
                 user_prompt=resolved.prompt,
             )
             if resolved.prompt and resolved.prompt.strip():
@@ -130,7 +156,7 @@ async def _handle_media_group(
                     engine_override=resolved.engine_override,
                     context=resolved.context,
                     context_source=resolved.context_source,
-                    attachments=tuple(item.attachment for item in staged_group.staged),
+                    attachments=tuple(attachments),
                 ),
             )
             return

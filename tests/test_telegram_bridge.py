@@ -2469,7 +2469,8 @@ async def test_run_main_loop_prompt_upload_uses_caption_directives(
     prompt_text, _ = runner.calls[0]
     assert prompt_text.startswith("do thing")
     assert "/other" not in prompt_text
-    assert "[uploaded file: incoming/hello.txt]" in prompt_text
+    assert "Attached files:" in prompt_text
+    assert "- incoming/hello.txt" in prompt_text
 
 
 @pytest.mark.anyio
@@ -2747,7 +2748,8 @@ async def test_run_main_loop_forwarded_document_still_uploads(
     assert runner.calls
     prompt_text, _ = runner.calls[0]
     assert prompt_text.startswith("do thing")
-    assert "[uploaded file: incoming/hello.txt]" in prompt_text
+    assert "Attached files:" in prompt_text
+    assert "- incoming/hello.txt" in prompt_text
 
 
 @pytest.mark.anyio

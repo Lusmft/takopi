@@ -35,11 +35,12 @@ def _document(
     file_id: str = "file",
     file_name: str | None = "upload.bin",
     file_size: int | None = 1,
+    mime_type: str | None = "application/octet-stream",
 ) -> TelegramDocument:
     return TelegramDocument(
         file_id=file_id,
         file_name=file_name,
-        mime_type="application/octet-stream",
+        mime_type=mime_type,
         file_size=file_size,
         raw={},
     )
@@ -260,6 +261,160 @@ async def test_save_document_payload_target_is_dir(tmp_path: Path) -> None:
     )
 
     assert result.error == "upload target is a directory."
+
+
+@pytest.mark.anyio
+async def test_stage_document_payload_rejects_large_file() -> None:
+    transport = FakeTransport()
+    cfg = replace(
+        make_cfg(transport),
+        bot=_FileBot(file_info=None, payload=None),
+    )
+    document = _document(file_size=TelegramFilesSettings.max_upload_bytes + 1)
+
+    result = await transfer._stage_document_payload(
+        cfg,
+        document=document,
+        chat_id=123,
+        message_id=1,
+    )
+
+    assert result.error == "file is too large to upload."
+
+
+@pytest.mark.anyio
+async def test_stage_document_payload_success() -> None:
+    transport = FakeTransport()
+    cfg = replace(
+        make_cfg(transport),
+        bot=_FileBot(file_info=File(file_path="files/photo.png"), payload=b"png"),
+    )
+    document = _document(file_name="photo.png", mime_type="image/png")
+
+    result = await transfer._stage_document_payload(
+        cfg,
+        document=document,
+        chat_id=123,
+        message_id=7,
+    )
+
+    assert result.error is None
+    assert result.rel_path is not None
+    assert result.rel_path.read_bytes() == b"png"
+    assert "123/7" in result.rel_path.as_posix()
+
+
+@pytest.mark.anyio
+async def test_stage_file_put_builds_prompt_attachment() -> None:
+    transport = FakeTransport()
+    cfg = replace(
+        make_cfg(transport),
+        bot=_FileBot(file_info=File(file_path="files/photo.png"), payload=b"png"),
+    )
+    msg = _msg(
+        "caption",
+        document=_document(file_name="photo.png", mime_type="image/png"),
+    )
+
+    staged = await transfer._stage_file_put(cfg, msg)
+
+    assert staged is not None
+    assert staged.attachment.kind == "image"
+    assert staged.attachment.mime_type == "image/png"
+    assert staged.path.read_bytes() == b"png"
+
+
+@pytest.mark.anyio
+async def test_stage_file_put_group_tracks_successes_and_failures() -> None:
+    class _MixedBot(FakeBot):
+        async def get_file(self, file_id: str) -> File | None:
+            if file_id == "missing":
+                return None
+            return File(file_path=f"files/{file_id}.txt")
+
+        async def download_file(self, file_path: str) -> bytes | None:
+            return file_path.encode()
+
+    transport = FakeTransport()
+    cfg = replace(make_cfg(transport), bot=_MixedBot())
+    ok = _msg("caption", document=_document(file_id="ok", file_name="ok.txt"))
+    missing = _msg(
+        "caption",
+        message_id=2,
+        document=_document(file_id="missing", file_name="missing.txt"),
+    )
+
+    staged = await transfer._stage_file_put_group(cfg, ok, [ok, missing])
+
+    assert staged is not None
+    assert len(staged.staged) == 1
+    assert staged.staged[0].attachment.path.read_bytes() == b"files/ok.txt"
+    assert [item.name for item in staged.failed] == ["missing.txt"]
+
+
+@pytest.mark.anyio
+async def test_stage_file_put_group_requires_documents() -> None:
+    transport = FakeTransport()
+    cfg = make_cfg(transport)
+    msg = _msg("caption")
+
+    staged = await transfer._stage_file_put_group(cfg, msg, [msg])
+
+    assert staged is None
+    assert transport.send_calls
+    assert "usage: /file put <path>" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_stage_reply_file_put_group_uses_replied_album() -> None:
+    transport = FakeTransport()
+    cfg = replace(
+        make_cfg(transport),
+        bot=_FileBot(file_info=File(file_path="files/a.txt"), payload=b"a"),
+    )
+    prompt = _msg("describe", message_id=10)
+    album_item = _msg(
+        "",
+        message_id=3,
+        document=_document(file_id="a", file_name="a.txt"),
+    )
+
+    staged = await transfer._stage_reply_file_put_group(cfg, prompt, [album_item])
+
+    assert staged is not None
+    assert len(staged.staged) == 1
+    assert staged.staged[0].path.read_bytes() == b"a"
+
+
+@pytest.mark.anyio
+async def test_stage_reply_file_put_group_tracks_failures() -> None:
+    transport = FakeTransport()
+    cfg = replace(make_cfg(transport), bot=_FileBot(file_info=None, payload=None))
+    prompt = _msg("describe", message_id=10)
+    album_item = _msg(
+        "",
+        message_id=3,
+        document=_document(file_id="missing", file_name="missing.txt"),
+    )
+
+    staged = await transfer._stage_reply_file_put_group(cfg, prompt, [album_item])
+
+    assert staged is not None
+    assert staged.staged == []
+    assert [item.name for item in staged.failed] == ["missing.txt"]
+
+
+@pytest.mark.anyio
+async def test_stage_reply_file_put_group_requires_documents() -> None:
+    transport = FakeTransport()
+    cfg = make_cfg(transport)
+    prompt = _msg("describe", message_id=10)
+
+    staged = await transfer._stage_reply_file_put_group(cfg, prompt, [_msg("")])
+
+    assert staged is None
+    assert transport.send_calls
+    assert "usage: /file put <path>" in transport.send_calls[-1]["message"].text
 
 
 def test_resolve_file_put_paths_invalid_dir(tmp_path: Path) -> None:
@@ -655,6 +810,86 @@ async def test_handle_file_put_group_formats_failures(
     assert transport.send_calls
     text = transport.send_calls[-1]["message"].text
     assert "saved a.txt to uploads/" in text
+    assert "failed:" in text
+
+
+@pytest.mark.anyio
+async def test_handle_file_put_group_formats_without_base_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    transport = FakeTransport()
+    cfg = replace(make_cfg(transport), runtime=_runtime(tmp_path))
+    msg = _msg("/file put")
+    saved_group = transfer._SavedFilePutGroup(
+        context=RunContext(project="proj", branch=None),
+        base_dir=None,
+        saved=[
+            transfer._FilePutResult(
+                name="a.txt",
+                rel_path=Path("incoming/a.txt"),
+                size=1,
+                error=None,
+            )
+        ],
+        failed=[],
+    )
+
+    async def _fake_save(*_args, **_kwargs):
+        return saved_group
+
+    monkeypatch.setattr(transfer, "_save_file_put_group", _fake_save)
+
+    await transfer._handle_file_put_group(
+        cfg,
+        msg,
+        "",
+        [msg],
+        ambient_context=None,
+        topic_store=None,
+    )
+
+    assert transport.send_calls
+    assert "saved a.txt to incoming/" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_handle_file_put_group_formats_total_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    transport = FakeTransport()
+    cfg = replace(make_cfg(transport), runtime=_runtime(tmp_path))
+    msg = _msg("/file put")
+    saved_group = transfer._SavedFilePutGroup(
+        context=RunContext(project="proj", branch=None),
+        base_dir=None,
+        saved=[],
+        failed=[
+            transfer._FilePutResult(
+                name="a.txt",
+                rel_path=None,
+                size=None,
+                error="boom",
+            )
+        ],
+    )
+
+    async def _fake_save(*_args, **_kwargs):
+        return saved_group
+
+    monkeypatch.setattr(transfer, "_save_file_put_group", _fake_save)
+
+    await transfer._handle_file_put_group(
+        cfg,
+        msg,
+        "",
+        [msg],
+        ambient_context=None,
+        topic_store=None,
+    )
+
+    assert transport.send_calls
+    text = transport.send_calls[-1]["message"].text
+    assert "failed to upload files" in text
     assert "failed:" in text
 
 

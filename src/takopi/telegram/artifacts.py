@@ -102,12 +102,12 @@ def collect_image_artifacts(
     candidates.extend(_iter_recent_image_files(cwd, since=since))
     file_change_paths: list[str] = []
     # For explicit image/screenshot requests the caller passes since=None.
-    # In that hot path, avoid tracker/action parsing entirely: it is runner-specific
-    # and can block delivery even when the artifact already exists on disk.
-    if since is not None:
+    # Prefer the cheap filesystem scan, but fall back to tracker/action parsing
+    # when the scan does not find nested files mentioned by runner events.
+    if since is not None or not candidates:
         try:
             file_change_paths = _iter_file_change_paths(tracker)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "telegram.artifacts.tracker_scan_failed",
                 error=str(exc),

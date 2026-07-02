@@ -112,6 +112,38 @@ async def test_media_group_auto_put_prompt_resolve_none(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
+async def test_media_group_auto_put_prompt_save_none(monkeypatch) -> None:
+    transport = FakeTransport()
+    files = TelegramFilesSettings(enabled=True, auto_put=True, auto_put_mode="prompt")
+    cfg = replace(make_cfg(transport), files=files)
+    msg = _msg("caption")
+    resolved = ResolvedMessage(
+        prompt="do the thing",
+        resume_token=None,
+        engine_override=None,
+        context=RunContext(project="proj"),
+        context_source="directives",
+    )
+
+    async def _resolve_prompt(*_args, **_kwargs):
+        return resolved
+
+    async def _save_group(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(media_commands, "_save_file_put_group", _save_group)
+
+    await media_commands._handle_media_group(
+        cfg,
+        [msg],
+        topic_store=None,
+        resolve_prompt=_resolve_prompt,
+    )
+
+    assert transport.send_calls == []
+
+
+@pytest.mark.anyio
 async def test_media_group_auto_put_prompt_runs_prompt(monkeypatch) -> None:
     transport = FakeTransport()
     files = TelegramFilesSettings(enabled=True, auto_put=True, auto_put_mode="prompt")
@@ -159,8 +191,124 @@ async def test_media_group_auto_put_prompt_runs_prompt(monkeypatch) -> None:
     )
 
     assert prompt_calls
-    assert "[uploaded files]" in prompt_calls[0]
-    assert "incoming/a.txt" in prompt_calls[0]
+    assert "Attached files:" in prompt_calls[0]
+    assert "- incoming/a.txt" in prompt_calls[0]
+
+
+@pytest.mark.anyio
+async def test_media_group_auto_put_prompt_reports_partial_failure(monkeypatch) -> None:
+    transport = FakeTransport()
+    files = TelegramFilesSettings(enabled=True, auto_put=True, auto_put_mode="prompt")
+    cfg = replace(make_cfg(transport), files=files)
+    msg = _msg(
+        "caption",
+        document=TelegramDocument(
+            file_id="doc-1",
+            file_name="a.txt",
+            mime_type="text/plain",
+            file_size=1,
+            raw={},
+        ),
+    )
+    resolved = ResolvedMessage(
+        prompt="do the thing",
+        resume_token=None,
+        engine_override=None,
+        context=RunContext(project="proj"),
+        context_source="directives",
+    )
+    saved_group = _SavedFilePutGroup(
+        context=resolved.context,
+        base_dir=None,
+        saved=[
+            _FilePutResult(
+                name="a.txt",
+                rel_path=Path("incoming/a.txt"),
+                size=1,
+                error=None,
+            )
+        ],
+        failed=[
+            _FilePutResult(
+                name="b.txt",
+                rel_path=None,
+                size=None,
+                error="boom",
+            )
+        ],
+    )
+    prompt_calls: list[str] = []
+
+    async def _resolve_prompt(*_args, **_kwargs):
+        return resolved
+
+    async def _save_group(*_args, **_kwargs):
+        return saved_group
+
+    async def _run_prompt(_msg, prompt: str, _resolved: ResolvedMessage) -> None:
+        prompt_calls.append(prompt)
+
+    monkeypatch.setattr(media_commands, "_save_file_put_group", _save_group)
+
+    await media_commands._handle_media_group(
+        cfg,
+        [msg],
+        topic_store=None,
+        resolve_prompt=_resolve_prompt,
+        run_prompt=_run_prompt,
+    )
+
+    assert prompt_calls
+    assert transport.send_calls
+    assert "some files failed to upload" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_media_group_auto_put_prompt_without_runner_reports_usage(
+    monkeypatch,
+) -> None:
+    transport = FakeTransport()
+    files = TelegramFilesSettings(enabled=True, auto_put=True, auto_put_mode="prompt")
+    cfg = replace(make_cfg(transport), files=files)
+    msg = _msg("caption")
+    resolved = ResolvedMessage(
+        prompt="do the thing",
+        resume_token=None,
+        engine_override=None,
+        context=RunContext(project="proj"),
+        context_source="directives",
+    )
+    saved_group = _SavedFilePutGroup(
+        context=resolved.context,
+        base_dir=None,
+        saved=[
+            _FilePutResult(
+                name="a.txt",
+                rel_path=Path("incoming/a.txt"),
+                size=1,
+                error=None,
+            )
+        ],
+        failed=[],
+    )
+
+    async def _resolve_prompt(*_args, **_kwargs):
+        return resolved
+
+    async def _save_group(*_args, **_kwargs):
+        return saved_group
+
+    monkeypatch.setattr(media_commands, "_save_file_put_group", _save_group)
+
+    await media_commands._handle_media_group(
+        cfg,
+        [msg],
+        topic_store=None,
+        resolve_prompt=_resolve_prompt,
+    )
+
+    assert transport.send_calls
+    assert "usage: /file put <path>" in transport.send_calls[-1]["message"].text
 
 
 @pytest.mark.anyio
@@ -210,3 +358,18 @@ async def test_media_group_auto_put_prompt_saved_failure(monkeypatch) -> None:
     assert "failed to upload files" in text
     assert "failed:" in text
     assert "boom" in text
+
+
+@pytest.mark.anyio
+async def test_media_group_without_auto_put_reports_usage() -> None:
+    transport = FakeTransport()
+    cfg = replace(
+        make_cfg(transport),
+        files=TelegramFilesSettings(enabled=True, auto_put=False),
+    )
+    msg = _msg("caption")
+
+    await media_commands._handle_media_group(cfg, [msg], topic_store=None)
+
+    assert transport.send_calls
+    assert "usage: /file put <path>" in transport.send_calls[-1]["message"].text

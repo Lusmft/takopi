@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 import time
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import anyio
 
@@ -33,6 +33,9 @@ from ..bridge import send_plain
 from ..engine_overrides import supports_reasoning
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from ..bridge import TelegramBridgeConfig
 
 
 @dataclass(slots=True)
@@ -195,7 +198,7 @@ async def _run_engine(
     show_resume_line: bool = True,
     progress_ref: MessageRef | None = None,
     run_options: EngineRunOptions | None = None,
-    telegram_cfg: "TelegramBridgeConfig | None" = None,
+    telegram_cfg: TelegramBridgeConfig | None = None,
 ) -> None:
     reply = partial(
         send_plain,

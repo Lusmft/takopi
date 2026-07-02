@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -263,7 +263,7 @@ def _dispatch_builtin_command(
         return True
 
     if command_id == "usage":
-        task_group.start_soon(reply, text=_USAGE_COMPAT_TEXT)
+        task_group.start_soon(partial(reply, text=_USAGE_COMPAT_TEXT))
         return True
 
     if cfg.topics.enabled and topic_store is not None:
@@ -1638,15 +1638,24 @@ async def run_main_loop(
                 )
                 if resolved is None:
                     return
-                staged = await stage_file_put(
+                saved = await save_file_put(
                     cfg,
                     msg,
+                    "",
+                    resolved.context,
+                    topic_store,
                 )
-                if staged is None:
+                if saved is None:
                     return
+                mime_type = msg.document.mime_type if msg.document is not None else None
+                attachment = PromptAttachment(
+                    kind="image" if mime_type is not None and mime_type.startswith("image/") else "document",
+                    path=saved.rel_path,
+                    mime_type=mime_type,
+                )
                 prompt = _build_attachment_prompt(
                     resolved.prompt,
-                    [staged.attachment],
+                    [attachment],
                 )
                 await run_prompt_from_upload(
                     msg,
@@ -1657,7 +1666,7 @@ async def run_main_loop(
                         engine_override=resolved.engine_override,
                         context=resolved.context,
                         context_source=resolved.context_source,
-                        attachments=(staged.attachment,),
+                        attachments=(attachment,),
                     ),
                 )
 
