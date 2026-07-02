@@ -496,7 +496,8 @@ def _format_model_overlay_for_telegram(text: str) -> str:
         lines.append("")
         lines.append(f"Effort: {effort}")
     lines.append("")
-    lines.append("Use `/model 1`, `/model 2`, `/model 3`, or `/model 4`.")
+    choices = ", ".join(f"`/model {idx}`" for idx in range(1, len(options) + 1))
+    lines.append(f"Use {choices}.")
     return "  \n".join(lines).strip()
 
 
@@ -513,6 +514,11 @@ def _focused_model_index_from_overlay(text: str) -> int | None:
         if option is not None:
             return int(option.group(1))
     return None
+
+
+def _model_switch_confirmation_requested(text: str) -> bool:
+    clean = _normalize_interactive_text(text)
+    return "Switch model?" in clean and "Yes, switch to" in clean
 
 
 def _format_usage_overlay_for_telegram(text: str) -> str:
@@ -688,9 +694,12 @@ def _capture_channel_model_command(session: str, selection: str | None) -> str:
         _tmux_send_escape(session)
         return f"Claude Code /model:\n\n{_format_model_overlay_for_telegram(segment)}"
 
-    if selection not in {"1", "2", "3", "4"}:
+    options, _effort = _model_options_from_overlay(segment)
+    valid_selections = {str(idx) for idx in range(1, len(options) + 1)}
+    if selection not in valid_selections:
         _tmux_send_escape(session)
-        return "usage: `/model`, `/model 1`, `/model 2`, `/model 3`, or `/model 4`"
+        choices = ", ".join(f"`/model {idx}`" for idx in range(1, len(options) + 1))
+        return f"usage: `/model` or {choices}"
 
     focused_index = _focused_model_index_from_overlay(segment) or 1
     target_index = int(selection)
@@ -701,11 +710,17 @@ def _capture_channel_model_command(session: str, selection: str | None) -> str:
     time.sleep(0.2)
     _tmux_send_keys_slow(session, *moves, "s")
     status_line = ""
+    confirmed_switch = False
     deadline = time.time() + 8.0
     while time.time() < deadline:
         pane = _tmux_capture(session)
         segment = _slash_segment_after_latest_prompt("/model", pane) or pane
         clean = _normalize_interactive_text(segment)
+        if not confirmed_switch and _model_switch_confirmation_requested(segment):
+            _tmux_send_keys_slow(session, "Enter", delay_s=0.2)
+            confirmed_switch = True
+            time.sleep(0.5)
+            continue
         for raw in reversed(clean.splitlines()):
             line = raw.strip()
             lowered = line.lower()

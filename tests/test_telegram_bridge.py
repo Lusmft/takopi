@@ -736,7 +736,7 @@ def test_format_model_overlay_for_telegram_lists_options() -> None:
     assert "current" in text
     assert "· 2. Sonnet" in text
     assert "Effort: xHigh effort" in text
-    assert "Use `/model 1`, `/model 2`, `/model 3`, or `/model 4`." in text
+    assert "Use `/model 1`, `/model 2`, `/model 3`, `/model 4`." in text
 
 
 def test_capture_channel_model_command_confirms_current_model(monkeypatch) -> None:
@@ -770,6 +770,52 @@ def test_capture_channel_model_command_confirms_current_model(monkeypatch) -> No
     assert sent_keys == [("Down", "s")]
     assert "Set model to Fable 5 for this session" in text
     assert "selected option 2" not in text
+
+
+def test_capture_channel_model_command_confirms_switch_dialog(monkeypatch) -> None:
+    raw_before = textwrap.dedent(
+        """
+        Select model
+        ❯ 1. Default (recommended) ✔  Opus 4.8 with 1M context
+          2. Opus                     Opus 4.8 with 1M context
+          3. Fable                    Fable 5
+          4. Sonnet                   Sonnet 4.6
+          5. Haiku                    Haiku 4.5
+        """
+    )
+    captures = iter(
+        [
+            textwrap.dedent(
+                """
+                ❯ /model
+                Switch model?
+                ❯ 1. Yes, switch to Fable 5
+                  2. No, go back
+                """
+            ),
+            "❯ /model\n  ⎿  Set model to Fable 5 for this session",
+        ]
+    )
+    sent_keys: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_send_slash_command", lambda *_: True)
+    monkeypatch.setattr(telegram_channel_bridge, "_wait_for_model_overlay", lambda *_: raw_before)
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_keys_slow",
+        lambda _session, *keys, **_kwargs: sent_keys.append(keys) or True,
+    )
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_capture",
+        lambda _session: next(captures),
+    )
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_send_escape", lambda *_: None)
+
+    text = telegram_channel_bridge._capture_channel_model_command("sess", "3")
+
+    assert sent_keys == [("Down", "Down", "s"), ("Enter",)]
+    assert "Set model to Fable 5 for this session" in text
 
 
 def test_capture_channel_model_command_moves_from_current_cursor(monkeypatch) -> None:
