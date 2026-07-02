@@ -99,6 +99,30 @@ class TelegramFilesSettings(BaseModel):
         return value
 
 
+class TelegramChannelBridgeProjectSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    inbound_url: NonEmptyStr
+    tmux_session: NonEmptyStr | None = None
+
+
+class TelegramChannelBridgeSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    inbound_url: NonEmptyStr = "http://127.0.0.1:8788/push"
+    reply_host: NonEmptyStr = "127.0.0.1"
+    reply_port: StrictInt = Field(default=8789, ge=1, le=65535)
+    shared_secret: NonEmptyStr | None = None
+    send_progress: bool = True
+    live_progress: bool = False
+    tmux_session: NonEmptyStr | None = None
+    poll_interval_s: float = Field(default=1.0, ge=0.2, le=10.0)
+    projects: dict[NonEmptyStr, TelegramChannelBridgeProjectSettings] = Field(
+        default_factory=dict
+    )
+
+
 class TelegramTransportSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -117,6 +141,7 @@ class TelegramTransportSettings(BaseModel):
     media_group_debounce_s: float = Field(default=1.0, ge=0)
     topics: TelegramTopicsSettings = Field(default_factory=TelegramTopicsSettings)
     files: TelegramFilesSettings = Field(default_factory=TelegramFilesSettings)
+    channel_bridge: TelegramChannelBridgeSettings = Field(default_factory=TelegramChannelBridgeSettings)
 
 
 class TransportsSettings(BaseModel):

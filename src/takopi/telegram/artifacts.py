@@ -148,15 +148,16 @@ async def send_image_artifacts(
     cwd: Path | None,
     since: float | None = None,
 ) -> int:
+    effective_cwd = cwd if cwd is not None else Path.cwd()
     logger.info(
         "telegram.artifacts.collect.start",
-        cwd=str(cwd) if cwd is not None else None,
+        cwd=str(effective_cwd) if effective_cwd is not None else None,
         since=since,
     )
-    artifacts = collect_image_artifacts(tracker=tracker, cwd=cwd, since=since)
+    artifacts = collect_image_artifacts(tracker=tracker, cwd=effective_cwd, since=since)
     logger.info(
         "telegram.artifacts.collect",
-        cwd=str(cwd) if cwd is not None else None,
+        cwd=str(effective_cwd) if effective_cwd is not None else None,
         count=len(artifacts),
         paths=[artifact.rel_path for artifact in artifacts],
     )

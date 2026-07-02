@@ -75,8 +75,12 @@ def build_bot_commands(
         ("compact", "reset the current thread"),
         ("ctx", "show or update context"),
         ("usage", "show usage info"),
+        ("status", "show Claude Code status"),
+        ("stats", "show Claude Code stats"),
+        ("bridge_status", "show Takopi channel status"),
+        ("verbose", "toggle action updates"),
         ("agent", "set default engine"),
-        ("model", "set model override"),
+        ("model", "choose Claude Code model"),
         ("reasoning", "set reasoning override"),
         ("trigger", "set trigger mode"),
     ]:

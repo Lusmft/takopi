@@ -145,6 +145,7 @@ class TelegramBackend(TransportBackend):
             allowed_user_ids=tuple(settings.allowed_user_ids),
             topics=settings.topics,
             files=settings.files,
+            channel_bridge=settings.channel_bridge,
         )
 
         async def run_loop() -> None:

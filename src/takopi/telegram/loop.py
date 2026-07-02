@@ -72,6 +72,15 @@ from .topics import (
     _validate_topics_setup,
 )
 from .client import poll_incoming
+from .channel_bridge import (
+    channel_bridge_model_command_text,
+    channel_bridge_slash_command_text,
+    channel_bridge_status_text,
+    forward_to_channel,
+    handle_live_progress_callback_choice,
+    handle_live_progress_choice,
+    run_reply_server,
+)
 from .chat_prefs import ChatPrefsStore, resolve_prefs_path
 from .chat_sessions import ChatSessionStore, resolve_sessions_path
 from .engine_overrides import merge_overrides
@@ -103,6 +112,65 @@ _USAGE_COMPAT_TEXT = (
     "Use `/new` to reset the current thread; in Telegram transport `/compact` "
     "is treated as the same reset action."
 )
+
+
+async def _handle_channel_usage_command(
+    cfg: TelegramBridgeConfig,
+    reply: Callable[..., Awaitable[None]],
+) -> None:
+    await reply(text=await channel_bridge_slash_command_text(cfg, "/usage"))
+
+
+async def _handle_channel_status_command(
+    cfg: TelegramBridgeConfig,
+    reply: Callable[..., Awaitable[None]],
+) -> None:
+    await reply(text=await channel_bridge_slash_command_text(cfg, "/status"))
+
+
+async def _handle_channel_stats_command(
+    cfg: TelegramBridgeConfig,
+    reply: Callable[..., Awaitable[None]],
+) -> None:
+    await reply(text=await channel_bridge_slash_command_text(cfg, "/stats"))
+
+
+async def _handle_channel_model_command(
+    cfg: TelegramBridgeConfig,
+    args_text: str,
+    reply: Callable[..., Awaitable[None]],
+) -> None:
+    await reply(text=await channel_bridge_model_command_text(cfg, args_text))
+
+
+async def _handle_verbose_command(
+    msg: TelegramIncomingMessage,
+    args_text: str,
+    chat_prefs: ChatPrefsStore | None,
+    reply: Callable[..., Awaitable[None]],
+) -> None:
+    if chat_prefs is None:
+        await reply(text="verbose settings are unavailable (no config path).")
+        return
+    arg = args_text.strip().lower()
+    if arg in {"on", "true", "1"}:
+        await chat_prefs.set_channel_verbose(msg.chat_id, True)
+        await reply(text="channel verbose mode: on")
+        return
+    if arg in {"off", "false", "0", "clear"}:
+        await chat_prefs.clear_channel_verbose(msg.chat_id)
+        await reply(text="channel verbose mode: off")
+        return
+    if arg not in {"", "show"}:
+        await reply(text="usage: `/verbose`, `/verbose on`, or `/verbose off`")
+        return
+    enabled = await chat_prefs.get_channel_verbose(msg.chat_id)
+    await reply(
+        text=(
+            f"channel verbose mode: {'on' if enabled else 'off'}\n\n"
+            "When on, Takopi sends extra Claude action messages during live progress."
+        )
+    )
 
 
 def _chat_session_key(
@@ -235,6 +303,38 @@ def _dispatch_builtin_command(
         task_group.start_soon(handler)
         return True
 
+    if command_id == "usage":
+        if cfg.channel_bridge.enabled:
+            task_group.start_soon(_handle_channel_usage_command, cfg, reply)
+        else:
+            task_group.start_soon(partial(reply, text=_USAGE_COMPAT_TEXT))
+        return True
+
+    if command_id == "status":
+        task_group.start_soon(_handle_channel_status_command, cfg, reply)
+        return True
+
+    if command_id == "stats":
+        task_group.start_soon(_handle_channel_stats_command, cfg, reply)
+        return True
+
+    if command_id == "bridge_status":
+        task_group.start_soon(partial(reply, text=channel_bridge_status_text(cfg)))
+        return True
+
+    if command_id == "verbose":
+        if cfg.channel_bridge.enabled:
+            task_group.start_soon(
+                _handle_verbose_command,
+                msg,
+                args_text,
+                chat_prefs,
+                reply,
+            )
+        else:
+            task_group.start_soon(partial(reply, text="channel bridge is disabled."))
+        return True
+
     if command_id == "ctx":
         topic_key = (
             _topic_key(msg, cfg, scope_chat_ids=scope_chat_ids)
@@ -262,12 +362,8 @@ def _dispatch_builtin_command(
         task_group.start_soon(handler)
         return True
 
-    if command_id == "usage":
-        task_group.start_soon(partial(reply, text=_USAGE_COMPAT_TEXT))
-        return True
-
     if cfg.topics.enabled and topic_store is not None:
-        if command_id == "new":
+        if command_id in {"new", "compact"}:
             handler = partial(
                 handle_new_command,
                 cfg,
@@ -293,6 +389,9 @@ def _dispatch_builtin_command(
             return True
 
     if command_id == "model":
+        if cfg.channel_bridge.enabled:
+            task_group.start_soon(_handle_channel_model_command, cfg, args_text, reply)
+            return True
         handler = partial(
             handle_model_command,
             cfg,
@@ -1147,6 +1246,8 @@ async def run_main_loop(
                 )
             else:
                 poller_fn = poller
+            if cfg.channel_bridge.enabled:
+                tg.start_soon(run_reply_server, cfg)
             config_path = cfg.runtime.config_path
             watch_enabled = bool(watch_config) and config_path is not None
 
@@ -1446,6 +1547,23 @@ async def run_main_loop(
                 if resume_decision.handled_by_running_task:
                     return
                 resume_token = resume_decision.resume_token
+                if cfg.channel_bridge.enabled and engine_override == "claude":
+                    verbose = (
+                        await state.chat_prefs.get_channel_verbose(chat_id)
+                        if state.chat_prefs is not None
+                        else False
+                    )
+                    await forward_to_channel(
+                        cfg,
+                        chat_id=chat_id,
+                        user_msg_id=user_msg_id,
+                        text=prompt_text,
+                        context=context,
+                        thread_id=msg.thread_id,
+                        engine=engine_override,
+                        verbose=verbose,
+                    )
+                    return
                 if resume_token is None:
                     await run_job(
                         chat_id,
@@ -1638,21 +1756,39 @@ async def run_main_loop(
                 )
                 if resolved is None:
                     return
+                save_path = ""
+                if cfg.channel_bridge.enabled and msg.document is not None:
+                    mime_type = msg.document.mime_type
+                    if mime_type is not None and mime_type.startswith("image/"):
+                        save_path = f".takopi-uploads/telegram/{msg.chat_id}/{msg.message_id}/"
                 saved = await save_file_put(
                     cfg,
                     msg,
-                    "",
+                    save_path,
                     resolved.context,
                     topic_store,
                 )
-                if saved is None:
-                    return
-                mime_type = msg.document.mime_type if msg.document is not None else None
-                attachment = PromptAttachment(
-                    kind="image" if mime_type is not None and mime_type.startswith("image/") else "document",
-                    path=saved.rel_path,
-                    mime_type=mime_type,
-                )
+                attachment = None
+                if saved is not None and msg.document is not None:
+                    mime_type = msg.document.mime_type
+                    kind = (
+                        "image"
+                        if mime_type is not None and mime_type.startswith("image/")
+                        else "document"
+                    )
+                    attachment = PromptAttachment(
+                        kind=kind,
+                        path=saved.rel_path,
+                        mime_type=mime_type,
+                    )
+                if attachment is None:
+                    staged = await stage_file_put(
+                        cfg,
+                        msg,
+                    )
+                    if staged is None:
+                        return
+                    attachment = staged.attachment
                 prompt = _build_attachment_prompt(
                     resolved.prompt,
                     [attachment],
@@ -1737,6 +1873,14 @@ async def run_main_loop(
                 reply = make_reply(cfg, msg)
                 classification = _classify_message(msg, files_enabled=cfg.files.enabled)
                 text = classification.text
+                if await handle_live_progress_choice(
+                    cfg,
+                    chat_id=msg.chat_id,
+                    reply_to_message_id=msg.reply_to_message_id,
+                    text=text,
+                    reply=reply,
+                ):
+                    return
                 is_voice_transcribed = False
                 if classification.is_forward_candidate:
                     forward_coalescer.attach_forward(msg)
@@ -1876,7 +2020,16 @@ async def run_main_loop(
                             msg.document.mime_type is not None
                             and msg.document.mime_type.startswith("image/")
                         )
-                        if caption_text and (cfg.files.auto_put_mode == "prompt" or is_image_upload):
+                        if is_image_upload:
+                            prompt_text = caption_text or "Describe this image."
+                            tg.start_soon(
+                                handle_prompt_upload,
+                                msg,
+                                prompt_text,
+                                ambient_context,
+                                state.topic_store,
+                            )
+                        elif caption_text and cfg.files.auto_put_mode == "prompt":
                             tg.start_soon(
                                 handle_prompt_upload,
                                 msg,
@@ -2053,6 +2206,8 @@ async def run_main_loop(
                                 else:
                                     state.recent_media_groups.pop(media_key, None)
                 if isinstance(update, TelegramCallbackQuery):
+                    if await handle_live_progress_callback_choice(cfg, update):
+                        return
                     if update.data == CANCEL_CALLBACK_DATA:
                         tg.start_soon(
                             handle_callback_cancel,

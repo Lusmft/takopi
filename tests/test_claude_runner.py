@@ -423,3 +423,212 @@ async def test_run_strips_anthropic_api_key_by_default(tmp_path, monkeypatch) ->
         if isinstance(event, CompletedEvent):
             answer = event.answer
     assert answer == "api=set"
+
+
+def test_interactive_resume_lines_are_disabled() -> None:
+    runner = ClaudeRunner(claude_cmd="claude", interactive=True)
+
+    assert runner.extract_resume("`claude --resume old-session`") is None
+    assert runner.is_resume_line("`claude --resume old-session`") is False
+
+
+def test_interactive_slash_overlay_uses_latest_prompt(tmp_path, monkeypatch) -> None:
+    runner = ClaudeRunner(
+        claude_cmd="claude",
+        interactive=True,
+        interactive_session="takopi_test",
+        interactive_cwd=str(tmp_path),
+    )
+    captured: list[tuple[str, str]] = []
+
+    def fake_ensure(*, session: str, cwd: str, claude_cmd: str) -> None:
+        captured.append(("ensure", session))
+
+    def fake_capture(session: str) -> str:
+        captured.append(("capture", session))
+        return """❯ /usage
+  ⎿ Settings dialog dismissed
+❯ /usage
+────────────────────────────────────────────────────
+  Settings  Status   Config   Usage   Stats
+
+  Current session
+  █                                                  2% used
+
+  Esc to cancel
+"""
+
+    def fake_send(session: str, text: str) -> None:
+        captured.append(("send", text))
+
+    def fake_render(text: str, *, cwd: str, name_hint: str = "claude_usage") -> str:
+        assert "Current session" in text
+        assert "dialog dismissed" not in text
+        assert cwd == str(tmp_path)
+        return "artifacts/usage.png"
+
+    monkeypatch.setattr(claude_runner, "_ensure_interactive_claude_session", fake_ensure)
+    monkeypatch.setattr(claude_runner, "_tmux_capture", fake_capture)
+    monkeypatch.setattr(claude_runner, "_tmux_send_text", fake_send)
+    monkeypatch.setattr(claude_runner, "_render_overlay_png", fake_render)
+    monkeypatch.setattr(claude_runner.subprocess, "run", lambda *_args, **_kwargs: None)
+
+    async def collect_answer() -> str:
+        async for event in runner.run("/usage", None):
+            if isinstance(event, CompletedEvent):
+                return event.answer
+        raise AssertionError("missing completed event")
+
+    answer = anyio.run(collect_answer)
+
+    assert answer == "Скриншот: artifacts/usage.png"
+    assert ("send", "/usage") in captured
+
+
+def test_interactive_uses_run_base_dir_for_overlay_artifacts(tmp_path, monkeypatch) -> None:
+    runner = ClaudeRunner(
+        claude_cmd="claude",
+        interactive=True,
+        interactive_session="takopi_test",
+        interactive_cwd="/root",
+    )
+    captured: list[tuple[str, str]] = []
+
+    def fake_ensure(*, session: str, cwd: str, claude_cmd: str) -> None:
+        captured.append(("ensure_cwd", cwd))
+
+    def fake_capture(session: str) -> str:
+        return """❯ /usage
+────────────────────────────────────────────────────
+  Settings  Status   Config   Usage   Stats
+
+  Current session
+  █                                                  2% used
+"""
+
+    def fake_send(session: str, text: str) -> None:
+        captured.append(("send", text))
+
+    def fake_render(text: str, *, cwd: str, name_hint: str = "claude_usage") -> str:
+        captured.append(("render_cwd", cwd))
+        return "artifacts/usage.png"
+
+    monkeypatch.setattr(claude_runner, "_ensure_interactive_claude_session", fake_ensure)
+    monkeypatch.setattr(claude_runner, "_tmux_capture", fake_capture)
+    monkeypatch.setattr(claude_runner, "_tmux_send_text", fake_send)
+    monkeypatch.setattr(claude_runner, "_render_overlay_png", fake_render)
+    monkeypatch.setattr(claude_runner.subprocess, "run", lambda *_args, **_kwargs: None)
+
+    from takopi.utils.paths import reset_run_base_dir, set_run_base_dir
+
+    token = set_run_base_dir(tmp_path)
+    try:
+        async def collect_answer() -> str:
+            async for event in runner.run("/usage", None):
+                if isinstance(event, CompletedEvent):
+                    return event.answer
+            raise AssertionError("missing completed event")
+
+        answer = anyio.run(collect_answer)
+    finally:
+        reset_run_base_dir(token)
+
+    assert answer == "Скриншот: artifacts/usage.png"
+    assert ("ensure_cwd", str(tmp_path)) in captured
+    assert ("render_cwd", str(tmp_path)) in captured
+
+
+def test_interactive_restarts_session_when_cwd_changes(monkeypatch, tmp_path) -> None:
+    calls: list[list[str]] = []
+
+    class Proc:
+        stdout = "/root\n"
+
+    def fake_has_session(session: str) -> bool:
+        return True
+
+    def fake_tmux_run(args: list[str], *, check: bool = True):
+        calls.append(args)
+        return Proc()
+
+    def fake_subprocess_run(args, **kwargs):
+        calls.append(list(args))
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return Completed()
+
+    monkeypatch.setattr(claude_runner, "_tmux_has_session", fake_has_session)
+    monkeypatch.setattr(claude_runner, "_tmux_run", fake_tmux_run)
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(claude_runner, "_tmux_capture", lambda _session: "")
+    monkeypatch.setattr(claude_runner.time, "sleep", lambda _seconds: None)
+
+    claude_runner._ensure_interactive_claude_session(
+        session="takopi_test",
+        cwd=str(tmp_path),
+        claude_cmd="claude",
+    )
+
+    assert ["kill-session", "-t", "takopi_test"] in calls
+    assert any(call[:4] == ["tmux", "new-session", "-d", "-x"] for call in calls)
+
+
+def test_extract_interactive_answer_ignores_bottom_prompt_suggestion() -> None:
+    pane = """❯ в каком cwd ты сейчас находишься? ответь одной строкой
+
+● /root/usegateway
+
+✻ Brewed for 1s
+
+────────────────────────────────────────────────────────────────────────────────
+❯ покажи последние коммиты
+────────────────────────────────────────────────────────────────────────────────
+  gh auth login
+"""
+
+    answer = claude_runner._extract_interactive_answer(
+        "",
+        pane,
+        "в каком cwd ты сейчас находишься? ответь одной строкой",
+    )
+
+    assert answer == "/root/usegateway"
+
+
+def test_extract_interactive_answer_skips_tool_blocks() -> None:
+    pane = """❯ проект запущен?
+
+● Bash(ps aux | grep -E \"python\")
+  ⎿  root 123 python app.py
+     … +21 lines (ctrl+o to expand)
+
+● Bash(ss -tlnp 2>/dev/null | head -20)
+  ⎿  Waiting…
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   ss -tlnp 2>/dev/null | head -20
+   Check listening ports
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+● Проект запущен: backend и worker-процессы активны.
+  Порт API: 8000.
+
+✻ Brewed for 1s
+
+❯
+  gh auth login
+"""
+
+    answer = claude_runner._extract_interactive_answer("", pane, "проект запущен?")
+
+    assert "Bash(" not in answer
+    assert "Waiting" not in answer
+    assert "gh auth" not in answer
+    assert answer == "Проект запущен: backend и worker-процессы активны.\nПорт API: 8000."

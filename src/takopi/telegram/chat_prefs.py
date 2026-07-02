@@ -18,6 +18,7 @@ STATE_FILENAME = "telegram_chat_prefs_state.json"
 class _ChatPrefs(msgspec.Struct, forbid_unknown_fields=False):
     default_engine: str | None = None
     trigger_mode: str | None = None
+    channel_verbose: bool | None = None
     context_project: str | None = None
     context_branch: str | None = None
     engine_overrides: dict[str, EngineOverrides] = msgspec.field(default_factory=dict)
@@ -132,6 +133,33 @@ class ChatPrefsStore(JsonStateStore[_ChatPrefsState]):
     async def clear_trigger_mode(self, chat_id: int) -> None:
         await self.set_trigger_mode(chat_id, None)
 
+    async def get_channel_verbose(self, chat_id: int) -> bool:
+        async with self._lock:
+            self._reload_locked_if_needed()
+            chat = self._get_chat_locked(chat_id)
+            if chat is None:
+                return False
+            return bool(chat.channel_verbose)
+
+    async def set_channel_verbose(self, chat_id: int, enabled: bool | None) -> None:
+        async with self._lock:
+            self._reload_locked_if_needed()
+            chat = self._get_chat_locked(chat_id)
+            if not enabled:
+                if chat is None:
+                    return
+                chat.channel_verbose = None
+                if self._chat_is_empty(chat):
+                    self._remove_chat_locked(chat_id)
+                self._save_locked()
+                return
+            chat = self._ensure_chat_locked(chat_id)
+            chat.channel_verbose = True
+            self._save_locked()
+
+    async def clear_channel_verbose(self, chat_id: int) -> None:
+        await self.set_channel_verbose(chat_id, None)
+
     async def get_context(self, chat_id: int) -> RunContext | None:
         async with self._lock:
             self._reload_locked_if_needed()
@@ -222,6 +250,7 @@ class ChatPrefsStore(JsonStateStore[_ChatPrefsState]):
         return (
             _normalize_text(chat.default_engine) is None
             and _normalize_trigger_mode(chat.trigger_mode) is None
+            and not chat.channel_verbose
             and _normalize_text(chat.context_project) is None
             and _normalize_text(chat.context_branch) is None
             and not self._has_engine_overrides(chat.engine_overrides)

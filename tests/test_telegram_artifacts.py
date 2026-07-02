@@ -136,3 +136,39 @@ async def test_send_image_artifacts_sends_photo_album_for_multiple_pngs(tmp_path
     assert set(bot.media_group_calls[0]["files"]) == {"photo0", "photo1"}
     assert bot.photo_calls == []
     assert bot.document_calls == []
+
+
+@pytest.mark.anyio
+async def test_send_image_artifacts_falls_back_to_process_cwd(tmp_path: Path, monkeypatch) -> None:
+    image = tmp_path / "artifacts" / "usage.png"
+    image.parent.mkdir()
+    image.write_bytes(b"png")
+    monkeypatch.chdir(tmp_path)
+
+    tracker = ProgressTracker(engine="claude")
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine="claude")
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=TransportRuntime(router=_make_router(runner), projects=_empty_projects()),
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=FakeTransport(),
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+    )
+    incoming = IncomingMessage(channel_id=123, message_id=10, text="/usage")
+
+    count = await send_image_artifacts(
+        cfg,
+        incoming=incoming,
+        tracker=tracker,
+        cwd=None,
+        since=None,
+    )
+
+    assert count == 1
+    assert bot.photo_calls[0]["filename"] == "usage.png"
+    assert bot.photo_calls[0]["caption"] == "artifacts/usage.png"

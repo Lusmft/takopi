@@ -1,5 +1,8 @@
+import asyncio
+import textwrap
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import anyio
@@ -15,7 +18,12 @@ import takopi.telegram.loop as telegram_loop
 import takopi.telegram.topics as telegram_topics
 from takopi.directives import parse_directives
 from takopi.telegram.api_models import Chat, File, ForumTopic, Message, Update, User
-from takopi.settings import TelegramFilesSettings, TelegramTopicsSettings
+from takopi.settings import (
+    TelegramChannelBridgeProjectSettings,
+    TelegramChannelBridgeSettings,
+    TelegramFilesSettings,
+    TelegramTopicsSettings,
+)
 from takopi.telegram.bridge import (
     TelegramBridgeConfig,
     TelegramPresenter,
@@ -28,7 +36,8 @@ from takopi.telegram.bridge import (
     send_with_resume,
 )
 from takopi.telegram.client import BotClient
-from takopi.telegram.render import MAX_BODY_CHARS
+from takopi.telegram.render import MAX_BODY_CHARS, prepare_telegram
+import takopi.telegram.channel_bridge as telegram_channel_bridge
 from takopi.telegram.topic_state import TopicStateStore, resolve_state_path
 from takopi.telegram.chat_sessions import ChatSessionStore, resolve_sessions_path
 from takopi.telegram.chat_prefs import ChatPrefsStore, resolve_prefs_path
@@ -37,7 +46,7 @@ from takopi.context import RunContext
 from takopi.config import ProjectConfig, ProjectsConfig
 from takopi.runner_bridge import ExecBridgeConfig, RunningTask
 from takopi.runner import RunnerTurnControl
-from takopi.markdown import MarkdownPresenter
+from takopi.markdown import MarkdownParts, MarkdownPresenter
 from takopi.model import ResumeToken
 from takopi.progress import ProgressTracker
 from takopi.router import AutoRouter, RunnerEntry
@@ -65,6 +74,10 @@ FAST_FORWARD_COALESCE_S = 0.0
 FAST_MEDIA_GROUP_DEBOUNCE_S = 0.0
 BATCH_MEDIA_GROUP_DEBOUNCE_S = 0.05
 DEBOUNCE_FORWARD_COALESCE_S = 0.05
+
+
+async def _noop_reply_server(_cfg: TelegramBridgeConfig) -> None:
+    return None
 
 
 class _NoopTaskGroup:
@@ -175,7 +188,12 @@ def test_build_bot_commands_includes_cancel_and_engine() -> None:
     assert {"command": "compact", "description": "reset the current thread"} in commands
     assert {"command": "ctx", "description": "show or update context"} in commands
     assert {"command": "usage", "description": "show usage info"} in commands
+    assert {"command": "status", "description": "show Claude Code status"} in commands
+    assert {"command": "stats", "description": "show Claude Code stats"} in commands
+    assert {"command": "bridge_status", "description": "show Takopi channel status"} in commands
+    assert {"command": "verbose", "description": "toggle action updates"} in commands
     assert {"command": "agent", "description": "set default engine"} in commands
+    assert {"command": "model", "description": "choose Claude Code model"} in commands
     assert any(cmd["command"] == "codex" for cmd in commands)
 
 
@@ -355,6 +373,754 @@ def test_telegram_presenter_final_clears_button() -> None:
     rendered = presenter.render_final(state, elapsed_s=0.0, status="done", answer="ok")
 
     assert rendered.extra["reply_markup"]["inline_keyboard"] == []
+
+
+def test_channel_bridge_reply_render_splits_followups() -> None:
+    rendered = telegram_channel_bridge._render_channel_reply("x" * (MAX_BODY_CHARS + 50))
+
+    assert rendered.text
+    followups = rendered.extra.get("followups")
+    assert followups
+    assert all(isinstance(item, RenderedMessage) for item in followups)
+
+
+def test_latest_takopi_segment_uses_last_marker() -> None:
+    pane = "old\n← takopi: first\nfoo\n← takopi: second\nbar\n❯"
+
+    assert telegram_channel_bridge._latest_takopi_segment(pane).startswith("← takopi: second")
+
+
+def test_extract_live_progress_text_filters_prompt_chrome() -> None:
+    pane = """← takopi: привет
+
+● Bash(pwd)
+  ⎿ /root/usegateway
+
+✻ Worked for 3s
+
+❯ prompt
+gh auth login
+""" 
+
+    text = telegram_channel_bridge._extract_live_progress_text(pane)
+
+    assert "· Bash: `pwd`" in text
+    assert "Worked for 3s" in text
+    assert "gh auth login" not in text
+
+
+def test_extract_live_progress_text_formats_tool_calls() -> None:
+    pane = '''← takopi: Сделай гит пулл
+
+● Bash(echo "=== git pull ===" && git pull 2>&1 | head -40 && echo "=== status ===" && git status -s)
+  ⎿  Waiting…
+
+● Bash(echo "=== recent commit dates ===" && git log -10 --format="%h %ci %s")
+  ⎿  === recent commit dates ===
+
+✻ Newspapering… (10s · ↑ 399 tokens)
+
+❯
+'''
+
+    text = telegram_channel_bridge._extract_live_progress_text(pane)
+
+    assert "· Bash: git pull" in text
+    assert "↳ waiting for permission" in text
+    assert "· Bash: recent commit dates" in text
+    assert "↳ === recent commit dates ===" in text
+    assert "↻ Newspapering" in text
+
+
+def test_extract_live_progress_text_hides_permission_overlay() -> None:
+    pane = '''← takopi: в каком состоянии сейчас проект?
+
+● Bash(echo "=== HEAD vs latest QA tag RC-v1.23.13-11 ===" && git rev-list --left-right --count RC-v1.23.13-11...HEAD 2>&1 && echo "(left=in
+      QA tag not in HEAD, right=…)
+  ⎿  Waiting…
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   echo "=== HEAD vs latest QA tag RC-v1.23.13-11 ===" && git rev-list --left-right --count RC-v1.23.13-11...HEAD 2>&1
+   Compare HEAD with QA release tag
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don’t ask again for: git rev-list *
+   3. No
+
+ Esc to cancel · Tab to amend · ctrl+e to explain
+'''
+
+    text = telegram_channel_bridge._extract_live_progress_text(pane)
+
+    assert "· Bash: HEAD vs latest QA tag RC-v1.23.13-11" in text
+    assert "↳ waiting for permission" in text
+    assert "Bash command" not in text
+    assert "Do you want to proceed" not in text
+    assert "Compare HEAD with QA release tag" not in text
+    assert "QA tag not in HEAD" not in text
+
+
+def test_extract_live_progress_text_formats_mcp_permission_overlay() -> None:
+    pane = '''← takopi: привет, что это за проект?
+
+  Listed 1 directory (ctrl+o to expand)
+
+● Calling takopi… (ctrl+o to expand)
+
+────────────────────────────────────────────────────────────────────────────────
+ Tool use
+
+   takopi - reply(chat_id: "8081295168", reply_to_message_id: "1708", text:
+   "Привет! Это **FastAPI Admin Pro** — админ-панель.\\n\\n**Стек:**\\n-
+   FastAPI + Tortoise ORM\\n- UI на Tabler\\n\\nЧто хочешь с ним сделать?") (MCP)
+   Send a text reply back to the Telegram chat through Takopi.
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for takopi - reply commands in
+      /root/projects/fastapi-admin-pro
+   3. No
+
+ Esc to cancel · Tab to amend
+'''
+
+    text = telegram_channel_bridge._extract_live_progress_text(pane)
+
+    assert "· MCP: takopi.reply" in text
+    assert "↳ waiting for permission" in text
+    assert "FastAPI Admin Pro" not in text
+    assert "Do you want to proceed" not in text
+    assert "1. Yes" not in text
+
+
+def test_extract_live_progress_text_filters_claude_feedback_prompt() -> None:
+    pane = """← takopi: Сделай гит пулл
+
+● git pull не сработал автоматически — у ветки нет upstream.
+
+  Calling takopi… (ctrl+o to expand)
+
+· Composing… (25s · ↑ 863 tokens)
+
+● How is Claude doing this session? (optional)
+  1: Bad    2: Fine   3: Good   0: Dismiss
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+"""
+
+    text = telegram_channel_bridge._extract_live_progress_text(pane)
+
+    assert "git pull не сработал" in text
+    assert "Calling takopi" not in text
+    assert "Composing" not in text
+    assert "How is Claude doing" not in text
+    assert "1: Bad" not in text
+
+
+def test_extract_live_progress_text_filters_tips_and_ctrl_o_chrome() -> None:
+    pane = """← takopi: статус
+
+● Bash(git status -sb)
+  ⎿  ## release/1_23_13
+     ?? artifacts/
+     … +3 lines (ctrl+o to expand)
+
+✻ Coalescing… (9s · ↑ 469 tokens)
+  ⎿  Tip: Use ctrl+v to paste images from your clipboard
+
+❯
+"""
+
+    text = telegram_channel_bridge._extract_live_progress_text(pane)
+
+    assert "… +3 lines" in text
+    assert "ctrl+o to expand" not in text
+    assert "Tip:" not in text
+    assert "ctrl+v" not in text
+
+
+def test_channel_bridge_status_text_mentions_tmux(monkeypatch) -> None:
+    cfg = SimpleNamespace(
+        channel_bridge=SimpleNamespace(
+            enabled=True,
+            inbound_url="http://127.0.0.1:8788/push",
+            reply_host="127.0.0.1",
+            reply_port=8789,
+            live_progress=True,
+            tmux_session="takopi_channel_usegateway",
+        )
+    )
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_capture",
+        lambda session: "← takopi: request\n● ok",
+    )
+
+    text = telegram_channel_bridge.channel_bridge_status_text(cfg)
+
+    assert "tmux: takopi_channel_usegateway" in text
+    assert "visible state: ok" in text
+
+
+def test_capture_channel_slash_command_returns_overlay(monkeypatch) -> None:
+    sent: list[tuple[str, str]] = []
+    escaped: list[str] = []
+    pane = textwrap.dedent(
+        """
+        ❯ /usage
+        Settings  Status   Config   Usage   Stats
+        Current session
+        Total cost: $0.42
+        """
+    )
+
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_slash_command",
+        lambda session, command: sent.append((session, command)) or True,
+    )
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_capture", lambda session: pane)
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_escape",
+        lambda session: escaped.append(session),
+    )
+
+    text = telegram_channel_bridge._capture_channel_slash_command("sess", "/usage")
+
+    assert sent == [("sess", "/usage")]
+    assert escaped == ["sess"]
+    assert "Claude Code /usage:" in text
+    assert "· Total cost: $0.42" in text
+    assert "Settings  Status" not in text
+
+
+def test_format_usage_overlay_for_telegram_wraps_sections() -> None:
+    raw = textwrap.dedent(
+        """
+        Settings  Status   Config   Usage   Stats
+        Session
+        Total cost:            $2.99
+        Total duration (API):  2m 20s
+        Usage by model:
+             claude-opus-4-7:  6.7k input, 3.7k output, 2.6m cache read, 247.6k
+        cache write ($2.99)
+        Current session
+        █████                                              10% used
+        █ 6% used
+        Resets 2pm (UTC)
+        Extra usage
+        Extra usage not enabled · /extra-usage to enable
+        Rese s Jun 16, 9pm (UTC)
+        Refresh1:59pm (UTC)
+        8:59pm (UTC)
+        """
+    )
+
+    text = telegram_channel_bridge._format_usage_overlay_for_telegram(raw)
+
+    assert "Settings  Status" not in text
+    assert "Session  \n· Total cost: $2.99" in text
+    assert "· Total duration (API): 2m 20s" in text
+    assert "Usage by model  \n· claude-opus-4-7:" in text
+    assert "cache write ($2.99)" in text
+    assert "Current session  \n· █████ 10% used  \n· Resets 2pm (UTC)" in text
+    assert "Extra usage  \n· Extra usage not enabled" in text
+    assert "█ 6% used" not in text
+    assert "Rese s" not in text
+    assert "Refresh1" not in text
+    assert "8:59pm" not in text
+
+
+def test_format_usage_overlay_keeps_bullets_after_telegram_render() -> None:
+    body = telegram_channel_bridge._format_usage_overlay_for_telegram(
+        "Session\nTotal cost: $2.99"
+    )
+
+    rendered, _entities = prepare_telegram(MarkdownParts(header=body))
+
+    assert "· Total cost: $2.99" in rendered
+    assert "- Total cost: $2.99" not in rendered
+
+
+def test_format_status_overlay_for_telegram_wraps_fields() -> None:
+    raw = textwrap.dedent(
+        """
+        Settings  Status   Config   Usage   Stats
+        Version:          2.1.173
+        Session name:     /rename to add a name
+        Model:            Default (Opus 4.8 with 1M context · Best for everyday,
+                          complex tasks)
+        MCP servers:      1 connected, 1 failed · /mcp
+        Esc to cancel
+        """
+    )
+
+    text = telegram_channel_bridge._format_status_overlay_for_telegram(raw)
+
+    assert "Settings  Status" not in text
+    assert "· Version: 2.1.173" in text
+    assert "· Session name: /rename to add a name" in text
+    assert "· Model: Default (Opus 4.8 with 1M context" in text
+    assert "complex tasks)" in text
+    assert "· MCP servers: 1 connected, 1 failed · /mcp" in text
+
+
+def test_format_stats_overlay_for_telegram_splits_metrics() -> None:
+    raw = textwrap.dedent(
+        """
+        Settings  Status   Config   Usage   Stats
+           Overview   Models
+
+          Mon ·······▒▒▓█
+              Less ░ ▒ ▓ █ More
+          All time · Last 7 days · Last 30 days
+
+          Favorite model: Opus 4.8        Total tokens: 4.1m
+          Sessions: 376                   Longest session: 28d 2h 31m
+          Active days: 31/31              Longest streak: 31 days
+          Most active day: May 14         Current streak: 31 days
+          You've used ~14x more tokens than Crime and Punishment
+            ↓ stats · r to cycle dates · ctrl+s to copy
+        """
+    )
+
+    text = telegram_channel_bridge._format_stats_overlay_for_telegram(raw)
+
+    assert "Settings  Status" not in text
+    assert text.startswith("```\n")
+    assert "Overview Models" in text
+    assert "Mon ·······▒▒▓█" in text
+    assert "Less ░ ▒ ▓ █ More" in text
+    assert "· Favorite model: Opus 4.8" in text
+    assert "· Total tokens: 4.1m" in text
+    assert "· Sessions: 376" in text
+    assert "· Longest session: 28d 2h 31m" in text
+    assert "· Current streak: 31 days" in text
+    assert "ctrl+s" not in text
+
+    rendered, entities = prepare_telegram(MarkdownParts(header=text))
+    assert "Mon ·······▒▒▓█" in rendered
+    assert "Last 7 days · Last 30 days\n\n· Favorite model" in rendered
+    assert any(entity.get("type") == "pre" for entity in entities)
+
+
+def test_format_model_overlay_for_telegram_lists_options() -> None:
+    raw = textwrap.dedent(
+        """
+        Select model
+        Switch between Claude models. Applies to this session and future Claude Code
+        sessions. For other/previous model names, specify with --model.
+
+        ❯ 1. Default (recommended) ✔  Opus 4.7 with 1M context · Most capable for
+                                      complex work
+          2. Sonnet                   Sonnet 4.6 · Best for everyday tasks
+          3. Haiku                    Haiku 4.5 · Fastest for quick answers
+          4. Fable                    Fable 5 · Most capable
+
+        ◉ xHigh effort (default) ←/→ to adjust
+        Enter to confirm · Esc to cancel
+        """
+    )
+
+    text = telegram_channel_bridge._format_model_overlay_for_telegram(raw)
+
+    assert "Claude Code model:" in text
+    assert "Current: Opus 4.7 with 1M context" in text
+    assert "Available models:" in text
+    assert "· 1. Default (recommended)" in text
+    assert "current" in text
+    assert "· 2. Sonnet" in text
+    assert "Effort: xHigh effort" in text
+    assert "Use `/model 1`, `/model 2`, `/model 3`, or `/model 4`." in text
+
+
+def test_capture_channel_model_command_confirms_current_model(monkeypatch) -> None:
+    raw_before = textwrap.dedent(
+        """
+        Select model
+        ❯ 1. Default (recommended) ✔  Opus 4.8 with 1M context
+          2. Fable                    Fable 5
+          3. Sonnet                   Sonnet 4.6
+          4. Haiku                    Haiku 4.5
+        """
+    )
+    sent_keys: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_send_slash_command", lambda *_: True)
+    monkeypatch.setattr(telegram_channel_bridge, "_wait_for_model_overlay", lambda *_: raw_before)
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_keys_slow",
+        lambda _session, *keys: sent_keys.append(keys) or True,
+    )
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_capture",
+        lambda _session: "❯ /model\n  ⎿  Set model to Fable 5 for this session",
+    )
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_send_escape", lambda *_: None)
+
+    text = telegram_channel_bridge._capture_channel_model_command("sess", "2")
+
+    assert sent_keys == [("Down", "s")]
+    assert "Set model to Fable 5 for this session" in text
+    assert "selected option 2" not in text
+
+
+def test_capture_channel_model_command_moves_from_current_cursor(monkeypatch) -> None:
+    raw_before = textwrap.dedent(
+        """
+        Select model
+          1. Default (recommended)    Opus 4.8 with 1M context
+          2. Fable                    Fable 5
+        ❯ 3. Sonnet                ✔  Sonnet 4.6
+          4. Haiku                    Haiku 4.5
+        """
+    )
+    sent_keys: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_send_slash_command", lambda *_: True)
+    monkeypatch.setattr(telegram_channel_bridge, "_wait_for_model_overlay", lambda *_: raw_before)
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_keys_slow",
+        lambda _session, *keys: sent_keys.append(keys) or True,
+    )
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_capture",
+        lambda _session: "❯ /model\n  ⎿  Set model to Opus 4.8 for this session",
+    )
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_send_escape", lambda *_: None)
+
+    text = telegram_channel_bridge._capture_channel_model_command("sess", "1")
+
+    assert sent_keys == [("Up", "Up", "s")]
+    assert "Set model to Opus 4.8 for this session" in text
+
+
+@pytest.mark.anyio
+async def test_verbose_actions_send_new_lines_only() -> None:
+    transport = FakeTransport()
+    cfg = SimpleNamespace(
+        exec_cfg=SimpleNamespace(transport=transport),
+    )
+    run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=MessageRef(channel_id=123, message_id=10),
+        started_at=0,
+        chat_id=123,
+        user_msg_id=1,
+        thread_id=None,
+        verbose=True,
+    )
+
+    await telegram_channel_bridge._maybe_send_verbose_actions(
+        cfg,
+        run=run,
+        text="Read src/app.py\nRead src/app.py\nBash(pytest)",
+    )
+    await telegram_channel_bridge._maybe_send_verbose_actions(
+        cfg,
+        run=run,
+        text="Read src/app.py\nEdit src/app.py",
+    )
+
+    messages = [call["message"].text for call in transport.send_calls]
+    assert len(messages) == 3
+    assert any("Read src/app.py" in message for message in messages)
+    assert any("Bash(pytest)" in message for message in messages)
+    assert any("Edit src/app.py" in message for message in messages)
+
+
+@pytest.mark.anyio
+async def test_channel_bridge_slash_command_requires_tmux_session() -> None:
+    cfg = SimpleNamespace(
+        channel_bridge=SimpleNamespace(
+            enabled=True,
+            tmux_session=None,
+        )
+    )
+
+    text = await telegram_channel_bridge.channel_bridge_slash_command_text(cfg, "/usage")
+
+    assert text == "Claude Code tmux session is not configured."
+
+
+def test_channel_route_uses_project_specific_endpoint() -> None:
+    cfg = SimpleNamespace(
+        channel_bridge=TelegramChannelBridgeSettings(
+            inbound_url="http://127.0.0.1:8788/push",
+            tmux_session="takopi_channel_usegateway",
+            projects={
+                "project": TelegramChannelBridgeProjectSettings(
+                    inbound_url="http://127.0.0.1:8791/push",
+                    tmux_session="takopi_channel_project",
+                )
+            },
+        )
+    )
+
+    route = telegram_channel_bridge._channel_route(
+        cfg,
+        RunContext(project="project"),
+    )
+
+    assert route.project == "project"
+    assert route.inbound_url == "http://127.0.0.1:8791/push"
+    assert route.tmux_session == "takopi_channel_project"
+
+
+def test_channel_route_falls_back_to_default_endpoint() -> None:
+    cfg = SimpleNamespace(
+        channel_bridge=TelegramChannelBridgeSettings(
+            inbound_url="http://127.0.0.1:8788/push",
+            tmux_session="takopi_channel_usegateway",
+            projects={
+                "project": TelegramChannelBridgeProjectSettings(
+                    inbound_url="http://127.0.0.1:8791/push",
+                    tmux_session="takopi_channel_project",
+                )
+            },
+        )
+    )
+
+    route = telegram_channel_bridge._channel_route(
+        cfg,
+        RunContext(project="usegateway"),
+    )
+
+    assert route.project == "usegateway"
+    assert route.inbound_url == "http://127.0.0.1:8788/push"
+    assert route.tmux_session == "takopi_channel_usegateway"
+
+
+def test_live_progress_choice_requires_permission_prompt(monkeypatch):
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS.clear()
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS.clear()
+    run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=telegram_channel_bridge.MessageRef(channel_id=123, message_id=10),
+        started_at=0,
+    )
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS[(123, 1)] = run
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS[(123, 10)] = (123, 1)
+    cfg = SimpleNamespace(channel_bridge=SimpleNamespace(tmux_session="sess"))
+    sent: list[tuple[str, str]] = []
+    replies: list[str] = []
+
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_capture", lambda session: "← takopi: working")
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_choice",
+        lambda session, choice: sent.append((session, choice)) or True,
+    )
+
+    async def reply(**kwargs):
+        replies.append(kwargs["text"])
+
+    handled = asyncio.run(
+        telegram_channel_bridge.handle_live_progress_choice(
+            cfg,
+            chat_id=123,
+            reply_to_message_id=10,
+            text="2",
+            reply=reply,
+        )
+    )
+
+    assert handled is True
+    assert sent == []
+    assert replies == ["no visible Claude permission prompt to answer."]
+
+
+def test_live_progress_choice_sends_tmux_choice(monkeypatch):
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS.clear()
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS.clear()
+    run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=telegram_channel_bridge.MessageRef(channel_id=123, message_id=10),
+        started_at=0,
+    )
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS[(123, 1)] = run
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS[(123, 10)] = (123, 1)
+    cfg = SimpleNamespace(channel_bridge=SimpleNamespace(tmux_session="sess"))
+    replies: list[str] = []
+    sent: list[tuple[str, str]] = []
+    pane = textwrap.dedent(
+        """
+        ← takopi: prompt
+        Read file
+        Do you want to proceed?
+        1. Yes
+        2. Yes, allow reading from uploads/ during this session
+        3. No
+        """
+    )
+
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_capture", lambda session: pane)
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_choice",
+        lambda session, choice: sent.append((session, choice)) or True,
+    )
+
+    async def reply(**kwargs):
+        replies.append(kwargs["text"])
+
+    handled = asyncio.run(
+        telegram_channel_bridge.handle_live_progress_choice(
+            cfg,
+            chat_id=123,
+            reply_to_message_id=10,
+            text="2",
+            reply=reply,
+        )
+    )
+
+    assert handled is True
+    assert sent == [("sess", "2")]
+    assert replies == ["sent permission choice `2` to Claude."]
+
+
+def test_render_live_progress_hides_permission_buttons_by_default() -> None:
+    rendered = telegram_channel_bridge._render_live_progress(
+        text="· Bash: Read file\n  ↳ waiting for permission",
+        elapsed_s=3,
+        status="working",
+        engine="claude",
+    )
+
+    assert rendered.extra["reply_markup"]["inline_keyboard"] == []
+
+
+def test_render_live_progress_adds_permission_buttons_when_ready() -> None:
+    rendered = telegram_channel_bridge._render_live_progress(
+        text="· Bash: Read file\n  ↳ waiting for permission",
+        elapsed_s=3,
+        status="working",
+        engine="claude",
+        permission_controls=True,
+    )
+
+    keyboard = rendered.extra["reply_markup"]["inline_keyboard"]
+    assert [button["text"] for button in keyboard[0]] == ["Yes", "Always", "No"]
+    assert [button["callback_data"] for button in keyboard[0]] == [
+        "takopi:perm:1",
+        "takopi:perm:2",
+        "takopi:perm:3",
+    ]
+
+
+def test_render_live_progress_preserves_action_line_breaks() -> None:
+    rendered = telegram_channel_bridge._render_live_progress(
+        text=(
+            "· Bash: git status\n"
+            '  ↳ On branch release/1_23_13 Untracked files: (use "git add <file>..." to include)\n'
+            '· Bash: echo "---vs main---"; git log --oneline main..HEAD\n'
+            "  ↳ ---vs main--- 218 commits ahead of main\n"
+            "↻ Metamorphosing…"
+        ),
+        elapsed_s=14,
+        status="working",
+        engine="claude",
+    )
+
+    assert "· Bash: git status\n↳ On branch release/1_23_13" in rendered.text
+    assert 'include)\n· Bash: echo "---vs main---"; git log' in rendered.text
+    assert "main..HEAD\n↳ ---vs main--- 218 commits ahead of main" in rendered.text
+    assert "main\n↻ Metamorphosing" in rendered.text
+
+
+def test_live_progress_callback_sends_tmux_choice(monkeypatch):
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS.clear()
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS.clear()
+    run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=telegram_channel_bridge.MessageRef(channel_id=123, message_id=10),
+        started_at=0,
+    )
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS[(123, 1)] = run
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS[(123, 10)] = (123, 1)
+    sent: list[tuple[str, str]] = []
+    answers: list[tuple[str, str | None]] = []
+    pane = textwrap.dedent(
+        """
+        ← takopi: prompt
+        Do you want to proceed?
+        1. Yes
+        2. Yes, allow reading from uploads/ during this session
+        3. No
+        """
+    )
+
+    async def answer_callback_query(callback_query_id, text=None, **_kwargs):
+        answers.append((callback_query_id, text))
+        return True
+
+    cfg = SimpleNamespace(
+        channel_bridge=SimpleNamespace(tmux_session="sess"),
+        bot=SimpleNamespace(answer_callback_query=answer_callback_query),
+    )
+    query = SimpleNamespace(
+        data="takopi:perm:2",
+        chat_id=123,
+        message_id=10,
+        callback_query_id="cb1",
+    )
+
+    monkeypatch.setattr(telegram_channel_bridge, "_tmux_capture", lambda session: pane)
+    monkeypatch.setattr(
+        telegram_channel_bridge,
+        "_tmux_send_choice",
+        lambda session, choice: sent.append((session, choice)) or True,
+    )
+
+    handled = asyncio.run(telegram_channel_bridge.handle_live_progress_callback_choice(cfg, query))
+
+    assert handled is True
+    assert sent == [("sess", "2")]
+    assert answers == [("cb1", "sent permission choice 2 to Claude.")]
+
+
+def test_permission_controls_ready_debounces_transient_prompt() -> None:
+    run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=telegram_channel_bridge.MessageRef(channel_id=123, message_id=10),
+        started_at=0,
+    )
+    pane = "Do you want to proceed?\n1. Yes\n2. Yes, allow reading\n3. No"
+    text = "· Bash: Read file\n  ↳ waiting for permission"
+
+    assert not telegram_channel_bridge._permission_controls_ready(run, pane=pane, text=text, now=10.0)
+    assert not telegram_channel_bridge._permission_controls_ready(run, pane=pane, text=text, now=11.0)
+    assert telegram_channel_bridge._permission_controls_ready(run, pane=pane, text=text, now=12.1)
+    assert not telegram_channel_bridge._permission_controls_ready(run, pane="done", text="done", now=13.0)
+    assert run.permission_seen_at is None
+
+
+def test_register_live_progress_supersedes_previous_chat_run() -> None:
+    telegram_channel_bridge._LIVE_PROGRESS_RUNS.clear()
+    telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS.clear()
+    old_run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=telegram_channel_bridge.MessageRef(channel_id=123, message_id=10),
+        started_at=0,
+    )
+    new_run = telegram_channel_bridge.LiveProgressRun(
+        progress_ref=telegram_channel_bridge.MessageRef(channel_id=123, message_id=11),
+        started_at=1,
+    )
+
+    asyncio.run(telegram_channel_bridge._register_live_progress(123, 1, old_run))
+    asyncio.run(telegram_channel_bridge._register_live_progress(123, 2, new_run))
+
+    expected_runs = {(123, 2): new_run}
+    expected_progress = {(123, 11): (123, 2)}
+
+    assert old_run.superseded is True
+    assert old_run.done.is_set()
+    assert expected_runs == telegram_channel_bridge._LIVE_PROGRESS_RUNS
+    assert expected_progress == telegram_channel_bridge._LIVE_PROGRESS_BY_PROGRESS
 
 
 def test_telegram_presenter_split_overflow_adds_followups() -> None:
@@ -2896,6 +3662,273 @@ async def test_run_main_loop_prompt_upload_auto_resumes_chat_sessions(
 
 
 @pytest.mark.anyio
+async def test_run_main_loop_image_upload_without_caption_prompts_runner(
+    tmp_path: Path,
+) -> None:
+    payload = b"image-bytes"
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+
+    class _UploadBot(FakeBot):
+        async def get_file(self, file_id: str) -> File | None:
+            _ = file_id
+            return File(file_path="photos/image.jpg")
+
+        async def download_file(self, file_path: str) -> bytes | None:
+            _ = file_path
+            return payload
+
+    transport = FakeTransport()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(
+        router=_make_router(runner),
+        projects=ProjectsConfig(
+            projects={
+                "proj": ProjectConfig(
+                    alias="proj",
+                    path=project_dir,
+                    worktrees_dir=Path(".worktrees"),
+                )
+            },
+            default_project="proj",
+        ),
+    )
+    cfg = TelegramBridgeConfig(
+        bot=_UploadBot(),
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        files=TelegramFilesSettings(enabled=True, auto_put=True),
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+            document=TelegramDocument(
+                file_id="img-1",
+                file_name=None,
+                mime_type="image/jpeg",
+                file_size=len(payload),
+                raw={"file_id": "img-1"},
+            ),
+        )
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls
+    prompt_text, _ = runner.calls[0]
+    assert prompt_text.startswith("Describe this image.")
+    assert "Attached images:" in prompt_text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_image_upload_without_caption_forwards_to_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"image-bytes"
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+
+    class _UploadBot(FakeBot):
+        async def get_file(self, file_id: str) -> File | None:
+            _ = file_id
+            return File(file_path="photos/image.jpg")
+
+        async def download_file(self, file_path: str) -> bytes | None:
+            _ = file_path
+            return payload
+
+    forwarded: list[str] = []
+
+    async def fake_forward_to_channel(cfg, **kwargs):
+        _ = cfg
+        forwarded.append(kwargs["text"])
+        return True
+
+    monkeypatch.setattr(telegram_loop, "forward_to_channel", fake_forward_to_channel)
+
+    async def fake_run_reply_server(_cfg):
+        return None
+
+    monkeypatch.setattr(telegram_loop, "run_reply_server", fake_run_reply_server)
+
+    transport = FakeTransport()
+    runner = ScriptRunner([Return(answer="ok")], engine="claude")
+    runtime = TransportRuntime(
+        router=_make_router(runner),
+        projects=ProjectsConfig(
+            projects={
+                "proj": ProjectConfig(
+                    alias="proj",
+                    path=project_dir,
+                    worktrees_dir=Path(".worktrees"),
+                    default_engine="claude",
+                )
+            },
+            default_project="proj",
+        ),
+    )
+    cfg = TelegramBridgeConfig(
+        bot=_UploadBot(),
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        files=TelegramFilesSettings(enabled=True, auto_put=True),
+        channel_bridge=TelegramChannelBridgeSettings(enabled=True, send_progress=False),
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+            document=TelegramDocument(
+                file_id="img-1",
+                file_name=None,
+                mime_type="image/jpeg",
+                file_size=len(payload),
+                raw={"file_id": "img-1"},
+            ),
+        )
+
+    await run_main_loop(cfg, poller)
+
+    assert forwarded
+    assert forwarded[0].startswith("Describe this image.")
+    assert "Attached images:" in forwarded[0]
+    assert ".takopi-uploads/telegram/123/1/" in forwarded[0]
+    assert "/.takopi-uploads/" in (project_dir / ".gitignore").read_text()
+    assert runner.calls == []
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_media_group_images_without_caption_prompts_runner(
+    tmp_path: Path,
+) -> None:
+    payloads = {
+        "photos/one.jpg": b"one",
+        "photos/two.jpg": b"two",
+    }
+    file_map = {
+        "img-1": "photos/one.jpg",
+        "img-2": "photos/two.jpg",
+    }
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+
+    class _UploadBot(FakeBot):
+        async def get_file(self, file_id: str) -> File | None:
+            file_path = file_map.get(file_id)
+            if file_path is None:
+                return None
+            return File(file_path=file_path)
+
+        async def download_file(self, file_path: str) -> bytes | None:
+            return payloads.get(file_path)
+
+    transport = FakeTransport()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(
+        router=_make_router(runner),
+        projects=ProjectsConfig(
+            projects={
+                "proj": ProjectConfig(
+                    alias="proj",
+                    path=project_dir,
+                    worktrees_dir=Path(".worktrees"),
+                )
+            },
+            default_project="proj",
+        ),
+    )
+    cfg = TelegramBridgeConfig(
+        bot=_UploadBot(),
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=BATCH_MEDIA_GROUP_DEBOUNCE_S,
+        files=TelegramFilesSettings(enabled=True, auto_put=True),
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+            media_group_id="grp-1",
+            document=TelegramDocument(
+                file_id="img-1",
+                file_name=None,
+                mime_type="image/jpeg",
+                file_size=len(payloads["photos/one.jpg"]),
+                raw={"file_id": "img-1"},
+            ),
+        )
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=2,
+            text="",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+            media_group_id="grp-1",
+            document=TelegramDocument(
+                file_id="img-2",
+                file_name=None,
+                mime_type="image/jpeg",
+                file_size=len(payloads["photos/two.jpg"]),
+                raw={"file_id": "img-2"},
+            ),
+        )
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls
+    prompt_text, _ = runner.calls[0]
+    assert prompt_text.startswith("Describe these images.")
+    assert "Attached images:" in prompt_text
+
+
+@pytest.mark.anyio
 async def test_run_main_loop_command_updates_chat_session_resume(
     tmp_path: Path,
     monkeypatch,
@@ -3331,6 +4364,298 @@ async def test_run_main_loop_new_clears_chat_sessions(tmp_path: Path) -> None:
 
     store2 = ChatSessionStore(resolve_sessions_path(state_path))
     assert await store2.get_session_resume(123, None, CODEX_ENGINE) is None
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_usage_uses_channel_slash_passthrough(monkeypatch) -> None:
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(router=_make_router(runner), projects=_empty_projects())
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="stateless",
+    )
+    cfg.channel_bridge.enabled = True
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/usage",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    async def fake_usage(cfg: TelegramBridgeConfig, command: str) -> str:
+        _ = cfg
+        assert command == "/usage"
+        return "Claude Code /usage:\n\nTotal cost: $0.42"
+
+    monkeypatch.setattr(telegram_loop, "channel_bridge_slash_command_text", fake_usage)
+    monkeypatch.setattr(telegram_loop, "run_reply_server", _noop_reply_server)
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls == []
+    assert transport.send_calls
+    assert "Total cost: $0.42" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_status_uses_channel_slash_passthrough(monkeypatch) -> None:
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(router=_make_router(runner), projects=_empty_projects())
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="stateless",
+    )
+    cfg.channel_bridge.enabled = True
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/status",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    async def fake_status(cfg: TelegramBridgeConfig, command: str) -> str:
+        _ = cfg
+        assert command == "/status"
+        return "Claude Code /status:\n\nClaude Code v2.1.173"
+
+    monkeypatch.setattr(telegram_loop, "channel_bridge_slash_command_text", fake_status)
+    monkeypatch.setattr(telegram_loop, "run_reply_server", _noop_reply_server)
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls == []
+    assert transport.send_calls
+    assert "Claude Code v2.1.173" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_stats_uses_channel_slash_passthrough(monkeypatch) -> None:
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(router=_make_router(runner), projects=_empty_projects())
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="stateless",
+    )
+    cfg.channel_bridge.enabled = True
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/stats",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    async def fake_stats(cfg: TelegramBridgeConfig, command: str) -> str:
+        _ = cfg
+        assert command == "/stats"
+        return "Claude Code /stats:\n\n· Total tokens: 4.1m"
+
+    monkeypatch.setattr(telegram_loop, "channel_bridge_slash_command_text", fake_stats)
+    monkeypatch.setattr(telegram_loop, "run_reply_server", _noop_reply_server)
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls == []
+    assert transport.send_calls
+    assert "Total tokens: 4.1m" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_bridge_status_is_local(monkeypatch) -> None:
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(router=_make_router(runner), projects=_empty_projects())
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="stateless",
+    )
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/bridge_status",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    monkeypatch.setattr(
+        telegram_loop,
+        "channel_bridge_status_text",
+        lambda cfg: "Takopi channel bridge:\nenabled: yes",
+    )
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls == []
+    assert transport.send_calls
+    assert "Takopi channel bridge:" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_model_uses_channel_passthrough(monkeypatch) -> None:
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(router=_make_router(runner), projects=_empty_projects())
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="stateless",
+    )
+    cfg.channel_bridge.enabled = True
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/model 2",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    async def fake_model(cfg: TelegramBridgeConfig, args_text: str) -> str:
+        _ = cfg
+        assert args_text == "2"
+        return "Claude Code /model:\n\nSwitched model to Sonnet."
+
+    monkeypatch.setattr(telegram_loop, "channel_bridge_model_command_text", fake_model)
+    monkeypatch.setattr(telegram_loop, "run_reply_server", _noop_reply_server)
+
+    await run_main_loop(cfg, poller)
+
+    assert runner.calls == []
+    assert transport.send_calls
+    assert "Switched model to Sonnet" in transport.send_calls[-1]["message"].text
+
+
+@pytest.mark.anyio
+async def test_run_main_loop_verbose_on_updates_chat_prefs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_path = tmp_path / "takopi.toml"
+    transport = FakeTransport()
+    bot = FakeBot()
+    runner = ScriptRunner([Return(answer="ok")], engine=CODEX_ENGINE)
+    runtime = TransportRuntime(
+        router=_make_router(runner),
+        projects=_empty_projects(),
+        config_path=state_path,
+    )
+    cfg = TelegramBridgeConfig(
+        bot=bot,
+        runtime=runtime,
+        chat_id=123,
+        startup_msg="",
+        exec_cfg=ExecBridgeConfig(
+            transport=transport,
+            presenter=MarkdownPresenter(),
+            final_notify=True,
+        ),
+        forward_coalesce_s=FAST_FORWARD_COALESCE_S,
+        media_group_debounce_s=FAST_MEDIA_GROUP_DEBOUNCE_S,
+        session_mode="stateless",
+    )
+    cfg.channel_bridge.enabled = True
+    monkeypatch.setattr(telegram_loop, "run_reply_server", _noop_reply_server)
+
+    async def poller(_cfg: TelegramBridgeConfig):
+        yield TelegramIncomingMessage(
+            transport="telegram",
+            chat_id=123,
+            message_id=1,
+            text="/verbose on",
+            reply_to_message_id=None,
+            reply_to_text=None,
+            sender_id=123,
+            chat_type="private",
+        )
+
+    await run_main_loop(cfg, poller)
+
+    prefs = ChatPrefsStore(resolve_prefs_path(state_path))
+    assert await prefs.get_channel_verbose(123) is True
+    assert runner.calls == []
+    assert "verbose mode: on" in transport.send_calls[-1]["message"].text
 
 
 @pytest.mark.anyio
@@ -4126,3 +5451,41 @@ async def test_run_main_loop_mentions_only_skips_voice_and_files(
     assert calls["voice"] == 0
     assert calls["file"] == 0
     assert runner.calls == []
+
+
+@pytest.mark.anyio
+async def test_run_engine_sanitizes_claude_slash_commands_with_attachments() -> None:
+    transport = _CaptureTransport()
+    runner = ScriptRunner([Return(answer="ok")], engine="claude")
+    exec_cfg = ExecBridgeConfig(
+        transport=transport,
+        presenter=MarkdownPresenter(),
+        final_notify=True,
+    )
+    runtime = TransportRuntime(
+        router=_make_router(runner),
+        projects=_empty_projects(),
+    )
+
+    await _run_engine(
+        exec_cfg=exec_cfg,
+        runtime=runtime,
+        running_tasks={},
+        chat_id=123,
+        user_msg_id=1,
+        text=(
+            "/ usage\n\n"
+            "Attached images:\n"
+            "- /tmp/file.jpg\n"
+            "[Telegram artifact delivery] screenshot"
+        ),
+        resume_token=None,
+        context=None,
+        reply_ref=None,
+        on_thread_known=None,
+        engine_override=None,
+        thread_id=None,
+        show_resume_line=False,
+    )
+
+    assert runner.calls[0][0] == "/usage"

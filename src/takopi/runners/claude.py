@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import datetime
+import json
+import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,8 +16,9 @@ import msgspec
 from ..backends import EngineBackend, EngineConfig
 from ..events import EventFactory
 from ..logging import get_logger
-from ..model import Action, ActionKind, EngineId, ResumeToken, TakopiEvent
+from ..model import Action, ActionKind, EngineId, ResumeToken, TakopiEvent, StartedEvent
 from ..runner import JsonlSubprocessRunner, ResumeTokenMixin, Runner
+from ..utils.paths import get_run_base_dir
 from .run_options import get_run_options
 from ..schemas import claude as claude_schema
 from .tool_actions import tool_input_path, tool_kind_and_title
@@ -26,6 +31,303 @@ DEFAULT_ALLOWED_TOOLS = ["Bash", "Read", "Edit", "Write"]
 _RESUME_RE = re.compile(
     r"(?im)^\s*`?claude\s+(?:--resume|-r)\s+(?P<token>[^`\s]+)`?\s*$"
 )
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _tmux_run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.run(
+        ["tmux", *args],
+        text=True,
+        capture_output=True,
+    )
+    if check and proc.returncode != 0:
+        raise RuntimeError(f"tmux {' '.join(args)} failed: {proc.stderr.strip()}")
+    return proc
+
+
+def _tmux_has_session(session: str) -> bool:
+    return _tmux_run(["has-session", "-t", session], check=False).returncode == 0
+
+
+def _tmux_capture(session: str) -> str:
+    return _tmux_run(["capture-pane", "-t", session, "-p", "-S", "-"]).stdout
+
+
+def _tmux_send_text(session: str, text: str) -> None:
+    subprocess.run(["tmux", "set-buffer", "-b", "takopi_claude_in", text], check=True)
+    subprocess.run(
+        ["tmux", "paste-buffer", "-b", "takopi_claude_in", "-t", session],
+        check=True,
+    )
+    subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=True)
+
+
+def _normalize_interactive_text(text: str) -> str:
+    text = ANSI_RE.sub("", text).replace("\u00a0", " ")
+    lines: list[str] = []
+    chrome_markers = [
+        "Claude Code v", "Welcome back", "Tips for getting", "Quick safety check",
+        "Accessing workspace", "Security guide", "Enter to confirm", "Esc to cancel",
+        "Yes, I trust this folder", "No, exit", "Welcome to Opus", "context)",
+        "? for shortcuts", "Auto-updating", "/effort to tune", "/root",
+    ]
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if line.startswith(("─", "╭", "╰", "│")):
+            continue
+        if any(marker in line for marker in chrome_markers) and not line.strip().startswith(("●", "⏺")):
+            continue
+        if re.fullmatch(r"[▐▛▜▌▝▘█ ]+", line.strip()):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _extract_interactive_answer(before: str, after: str, prompt: str) -> str:
+    if after.startswith(before):
+        suffix = after[len(before):]
+    else:
+        # capture-pane scrollback may trim old content, so anchor on the latest user prompt
+        idx = after.rfind(prompt)
+        suffix = after[idx + len(prompt):] if idx >= 0 else after
+    clean = _normalize_interactive_text(suffix)
+    out: list[str] = []
+    prompt_text = prompt.strip()
+    saw_final_answer = False
+    skip_tool_output = False
+    for line in clean.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("❯"):
+            if saw_final_answer:
+                break
+            continue
+        if prompt_text and prompt_text in s:
+            continue
+        assistant_line = s.startswith(("●", "⏺"))
+        thinking_line = s.startswith("✻")
+        if thinking_line:
+            if saw_final_answer:
+                break
+            continue
+        if assistant_line:
+            body = re.sub(r"^[●⏺]\s*", "", s)
+            if re.match(r"^(?:Bash|Read|Edit|Write|Grep|Glob|LS|TodoWrite)\(", body):
+                skip_tool_output = True
+                continue
+            skip_tool_output = False
+            s = body
+            saw_final_answer = True
+        elif skip_tool_output:
+            # Tool output lines (⎿, expanded command output, permission prompts) are UI,
+            # not the assistant's final answer for Telegram.
+            continue
+        elif not saw_final_answer:
+            # Ignore bottom prompt suggestions / overlays such as "gh auth login".
+            continue
+        if re.search(
+            r"\b(?:Churned|Worked|Brewed|Baked|Sautéed|Sauteed|Stewed|Cooked|"
+            r"Simmered|Toasted|Roasted|Stirred|Crunched|Shimmying) for \d+s",
+            s,
+        ):
+            if saw_final_answer:
+                break
+            continue
+        out.append(s)
+    return "\n".join(out).strip()
+
+def _slash_segment_after_latest_prompt(prompt: str, pane: str) -> str:
+    prompt_text = prompt.strip()
+    lines = pane.splitlines()
+    start_index = -1
+    if prompt_text:
+        normalized_prompt = prompt_text.lower().replace(" ", "")
+        for idx, raw in enumerate(lines):
+            stripped = raw.strip().lower().replace(" ", "")
+            if stripped.startswith("❯") and normalized_prompt in stripped:
+                start_index = idx + 1
+    if start_index < 0:
+        return ""
+    return "\n".join(lines[start_index:])
+
+
+def _is_interactive_slash_overlay(prompt: str, pane: str) -> bool:
+    cmd = prompt.strip().lower().replace(" ", "")
+    if cmd not in {"/usage", "/status", "/config", "/stats"}:
+        return False
+    segment = _slash_segment_after_latest_prompt(prompt, pane)
+    if not segment:
+        return False
+    # Ignore stale scrollback and the dismissal line from the previous overlay.
+    if "Settings dialog dismissed" in segment and "Settings  Status   Config   Usage   Stats" not in segment:
+        return False
+    indicators = [
+        "Settings  Status   Config   Usage   Stats",
+        "Total cost:",
+        "Current session",
+        "Current week",
+        "Extra usage",
+    ]
+    return any(item in segment for item in indicators)
+
+
+def _format_interactive_slash_overlay(prompt: str, pane: str) -> str:
+    # Work only with the latest slash-command response, not old scrollback.
+    segment = _slash_segment_after_latest_prompt(prompt, pane) or pane
+    clean = _normalize_interactive_text(segment)
+    all_lines = clean.splitlines()
+
+    lines = []
+    capture = False
+    for raw in all_lines:
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            if capture and lines and lines[-1] != "":
+                lines.append("")
+            continue
+        if "Settings  Status   Config   Usage   Stats" in line:
+            capture = True
+        if not capture:
+            continue
+        if stripped.startswith("❯"):
+            break
+        if "Esc to cancel" in line or "? for shortcuts" in line:
+            continue
+        if "dialog dismissed" in line:
+            continue
+        lines.append(line)
+    while lines and lines[-1] == "":
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+def _render_overlay_png(text: str, *, cwd: str, name_hint: str = "claude_usage") -> str | None:
+    """Render monospace overlay text to a PNG using system python3/Pillow.
+
+    Takopi's venv may not have Pillow, while the host python usually does.
+    Returns a path relative to cwd so Telegram artifact collection can upload it.
+    """
+    root = Path(cwd).expanduser()
+    out_dir = root / "artifacts"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    out = out_dir / f"{name_hint}-{stamp}.png"
+    script = r"""
+import json, sys
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
+payload=json.load(sys.stdin)
+text=payload["text"]
+out=Path(payload["out"])
+lines=text.splitlines() or [""]
+font_path="/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+try:
+    font=ImageFont.truetype(font_path, 24)
+except Exception:
+    font=ImageFont.load_default()
+dummy=Image.new("RGB", (1,1))
+d=ImageDraw.Draw(dummy)
+line_h=max(32, int(d.textbbox((0,0), "Mg", font=font)[3]*1.35))
+width=max(900, max(int(d.textlength(line, font=font)) for line in lines)+64)
+height=max(180, line_h*len(lines)+64)
+img=Image.new("RGB", (width, height), (12, 14, 18))
+d=ImageDraw.Draw(img)
+y=32
+for line in lines:
+    d.text((32,y), line, font=font, fill=(232, 238, 245))
+    y += line_h
+img.save(out)
+"""
+    try:
+        proc = subprocess.run(
+            ["python3", "-c", script],
+            input=json.dumps({"text": text, "out": str(out)}),
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+        if proc.returncode != 0:
+            logger.warning("interactive.overlay_png_failed", error=proc.stderr.strip())
+            return None
+        return str(out.relative_to(root))
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        logger.warning(
+            "interactive.overlay_png_failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        return None
+
+
+def _wait_interactive_answer(session: str, before: str, prompt: str, timeout_s: int, *, cwd: str = "/root") -> str:
+    last = ""
+    stable = 0
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        cur = _tmux_capture(session)
+        if _is_interactive_slash_overlay(prompt, cur):
+            # Snapshot the modal output, render it as an image, and dismiss it so
+            # the tmux session returns to prompt. Telegram artifact collection will
+            # upload the generated PNG after the run.
+            answer = _format_interactive_slash_overlay(prompt, cur)
+            rel_png = _render_overlay_png(answer, cwd=cwd, name_hint="claude_usage") if answer else None
+            subprocess.run(["tmux", "send-keys", "-t", session, "Escape"], check=False)
+            if rel_png:
+                return f"Скриншот: {rel_png}"
+            return answer or _extract_interactive_answer(before, cur, prompt)
+        answer = _extract_interactive_answer(before, cur, prompt)
+        tail = "\n".join(cur.splitlines()[-16:])
+        prompt_ready = "❯" in tail
+        if answer and answer == last:
+            stable += 1
+            if (prompt_ready and stable >= 2) or stable >= 4:
+                return answer
+        else:
+            stable = 0
+            last = answer
+        time.sleep(1)
+    return last or _extract_interactive_answer(before, _tmux_capture(session), prompt)
+
+
+def _ensure_interactive_claude_session(*, session: str, cwd: str, claude_cmd: str) -> None:
+    if _tmux_has_session(session):
+        current_cwd = _tmux_run(
+            ["display-message", "-p", "-t", session, "#{pane_current_path}"],
+            check=False,
+        ).stdout.strip()
+        try:
+            current_path = Path(current_cwd).resolve(strict=False)
+            wanted_path = Path(cwd).expanduser().resolve(strict=False)
+        except OSError:
+            current_path = Path(current_cwd)
+            wanted_path = Path(cwd).expanduser()
+        if current_path == wanted_path:
+            return
+        logger.info(
+            "interactive.session.cwd_changed",
+            session=session,
+            old_cwd=current_cwd,
+            new_cwd=str(wanted_path),
+        )
+        _tmux_run(["kill-session", "-t", session], check=False)
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-x", "180", "-y", "50", "-s", session, "-c", cwd, claude_cmd],
+        check=True,
+    )
+    # Detached tmux defaults to 80x24 unless told otherwise; Claude Code's /usage
+    # hides the wide limit columns in narrow terminals.
+    subprocess.run(["tmux", "resize-window", "-t", session, "-x", "180", "-y", "50"], check=False)
+    time.sleep(3)
+    out = _tmux_capture(session)
+    if "Yes, I trust this folder" in out:
+        subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=True)
+        time.sleep(4)
 
 
 @dataclass(slots=True)
@@ -288,6 +590,10 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
     allowed_tools: list[str] | None = None
     dangerously_skip_permissions: bool = False
     use_api_billing: bool = False
+    interactive: bool = False
+    interactive_session: str = "takopi_claude"
+    interactive_cwd: str = "/root"
+    interactive_timeout: int = 300
     session_title: str = "claude"
     logger = logger
 
@@ -295,6 +601,45 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         if token.engine != ENGINE:
             raise RuntimeError(f"resume token is for engine {token.engine!r}")
         return f"`claude --resume {token.value}`"
+
+    def is_resume_line(self, line: str) -> bool:
+        if self.interactive:
+            return False
+        return super().is_resume_line(line)
+
+    def extract_resume(self, text: str | None) -> ResumeToken | None:
+        if self.interactive:
+            return None
+        return super().extract_resume(text)
+
+    async def run_impl(self, prompt: str, resume: ResumeToken | None):
+        if not self.interactive:
+            async for evt in super().run_impl(prompt, resume):
+                yield evt
+            return
+        import anyio
+        token = resume or ResumeToken(engine=ENGINE, value=self.interactive_session)
+        yield StartedEvent(engine=ENGINE, resume=token, title=self.session_title, meta={"mode": "interactive"})
+        run_cwd = str(get_run_base_dir() or Path(self.interactive_cwd))
+        await anyio.to_thread.run_sync(
+            lambda: _ensure_interactive_claude_session(
+                session=self.interactive_session,
+                cwd=run_cwd,
+                claude_cmd=self.claude_cmd,
+            )
+        )
+        before = await anyio.to_thread.run_sync(_tmux_capture, self.interactive_session)
+        await anyio.to_thread.run_sync(_tmux_send_text, self.interactive_session, prompt)
+        answer = await anyio.to_thread.run_sync(
+            lambda: _wait_interactive_answer(
+                self.interactive_session,
+                before,
+                prompt,
+                self.interactive_timeout,
+                cwd=run_cwd,
+            )
+        )
+        yield EventFactory(ENGINE).completed_ok(answer=answer, resume=token)
 
     def _build_args(self, prompt: str, resume: ResumeToken | None) -> list[str]:
         run_options = get_run_options()
@@ -467,6 +812,14 @@ def build_runner(config: EngineConfig, _config_path: Path) -> Runner:
         allowed_tools = DEFAULT_ALLOWED_TOOLS
     dangerously_skip_permissions = config.get("dangerously_skip_permissions") is True
     use_api_billing = config.get("use_api_billing") is True
+    mode = str(config.get("mode") or "print").strip().lower()
+    interactive = mode in {"interactive", "tmux", "pty"}
+    interactive_session = str(config.get("interactive_session") or "takopi_claude")
+    interactive_cwd = str(config.get("interactive_cwd") or "/root")
+    try:
+        interactive_timeout = int(config.get("interactive_timeout") or 300)
+    except (TypeError, ValueError):
+        interactive_timeout = 300
     title = str(model) if model is not None else "claude"
 
     return ClaudeRunner(
@@ -475,6 +828,10 @@ def build_runner(config: EngineConfig, _config_path: Path) -> Runner:
         allowed_tools=allowed_tools,
         dangerously_skip_permissions=dangerously_skip_permissions,
         use_api_billing=use_api_billing,
+        interactive=interactive,
+        interactive_session=interactive_session,
+        interactive_cwd=interactive_cwd,
+        interactive_timeout=interactive_timeout,
         session_title=title,
     )
 
