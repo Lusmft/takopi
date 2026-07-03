@@ -345,9 +345,9 @@ def translate_claude_event(
         case claude_schema.StreamResultMessage():
             ok = not event.is_error
             result_text = event.result or ""
-            if ok and not result_text and state.last_assistant_text:
+            if ok and not result_text.strip() and state.last_assistant_text:
                 result_text = state.last_assistant_text
-            if ok and not result_text:
+            if ok and not result_text.strip():
                 result_text = (
                     _latest_transcript_assistant_text(
                         event.session_id,

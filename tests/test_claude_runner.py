@@ -174,7 +174,7 @@ def test_empty_success_result_recovers_latest_transcript_text(
                 "duration_api_ms": 900,
                 "is_error": False,
                 "num_turns": 1,
-                "result": "",
+                "result": " \n",
             }
         ),
         title="claude",
