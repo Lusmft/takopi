@@ -240,6 +240,66 @@ def test_empty_success_result_recovers_from_resume_session_transcript(
     assert completed.answer == "resume transcript answer"
 
 
+def test_early_empty_success_result_defers_until_process_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    session_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    state = ClaudeStreamState(started_at=1000)
+    resume = ResumeToken(engine=ENGINE, value=session_id)
+
+    events = translate_claude_event(
+        _decode_event(
+            {
+                "type": "result",
+                "session_id": session_id,
+                "subtype": "success",
+                "duration_ms": 1000,
+                "duration_api_ms": 900,
+                "is_error": False,
+                "num_turns": 1,
+                "result": "",
+            }
+        ),
+        title="claude",
+        state=state,
+        factory=state.factory,
+        resume=resume,
+        found_session=resume,
+    )
+
+    assert events == []
+
+    transcript = tmp_path / ".claude" / "projects" / "-root-tgsmm" / f"{session_id}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "timestamp": "1970-01-01T00:16:50.000Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "late transcript answer"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = ClaudeRunner(claude_cmd="claude")
+    completed_events = runner.stream_end_events(
+        resume=resume,
+        found_session=resume,
+        state=state,
+    )
+
+    assert len(completed_events) == 1
+    completed = completed_events[0]
+    assert isinstance(completed, CompletedEvent)
+    assert completed.ok is True
+    assert completed.answer == "late transcript answer"
+
+
 def test_translate_error_fixture_permission_denials() -> None:
     state = ClaudeStreamState()
     events: list = []

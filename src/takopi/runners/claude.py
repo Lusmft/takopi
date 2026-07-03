@@ -37,6 +37,8 @@ class ClaudeStreamState:
     pending_actions: dict[str, Action] = field(default_factory=dict)
     last_assistant_text: str | None = None
     started_at: float = field(default_factory=time.time)
+    empty_success_session_id: str | None = None
+    empty_success_usage: dict[str, Any] | None = None
     note_seq: int = 0
 
 
@@ -251,15 +253,32 @@ def _latest_transcript_assistant_text_for_sessions(
     session_ids: list[str],
     *,
     started_at: float,
+    attempts: int = 6,
+    delay_s: float = 0.5,
 ) -> str | None:
     for session_id in session_ids:
         recovered = _latest_transcript_assistant_text(
             session_id,
             started_at=started_at,
+            attempts=attempts,
+            delay_s=delay_s,
         )
         if recovered:
             return recovered
     return None
+
+
+def _transcript_recovery_session_ids(
+    session_id: str | None,
+    *,
+    found_session: ResumeToken | None,
+    resume: ResumeToken | None,
+) -> list[str]:
+    session_ids = [session_id] if session_id else []
+    for token in (found_session, resume):
+        if token is not None and token.value not in session_ids:
+            session_ids.append(token.value)
+    return session_ids
 
 
 def translate_claude_event(
@@ -371,10 +390,11 @@ def translate_claude_event(
             if ok and not result_text.strip() and state.last_assistant_text:
                 result_text = state.last_assistant_text
             if ok and not result_text.strip():
-                session_ids = [event.session_id]
-                for token in (found_session, resume):
-                    if token is not None and token.value not in session_ids:
-                        session_ids.append(token.value)
+                session_ids = _transcript_recovery_session_ids(
+                    event.session_id,
+                    found_session=found_session,
+                    resume=resume,
+                )
                 result_text = (
                     _latest_transcript_assistant_text_for_sessions(
                         session_ids,
@@ -382,6 +402,10 @@ def translate_claude_event(
                     )
                     or ""
                 )
+                if not result_text.strip():
+                    state.empty_success_session_id = event.session_id
+                    state.empty_success_usage = _usage_payload(event) or None
+                    return []
 
             resume = ResumeToken(engine=ENGINE, value=event.session_id)
             error = None if ok else _extract_error(event)
@@ -561,6 +585,40 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         found_session: ResumeToken | None,
         state: ClaudeStreamState,
     ) -> list[TakopiEvent]:
+        if state.empty_success_session_id is not None:
+            resume_for_completed = found_session or resume
+            session_ids = _transcript_recovery_session_ids(
+                state.empty_success_session_id,
+                found_session=found_session,
+                resume=resume,
+            )
+            answer = (
+                state.last_assistant_text
+                or _latest_transcript_assistant_text_for_sessions(
+                    session_ids,
+                    started_at=state.started_at,
+                    attempts=1,
+                    delay_s=0,
+                )
+                or ""
+            )
+            if answer.strip():
+                return [
+                    state.factory.completed_ok(
+                        answer=answer,
+                        resume=resume_for_completed,
+                        usage=state.empty_success_usage,
+                    )
+                ]
+            message = "claude finished with an empty result"
+            return [
+                state.factory.completed_error(
+                    error=message,
+                    resume=resume_for_completed,
+                    usage=state.empty_success_usage,
+                )
+            ]
+
         if not found_session:
             message = "claude finished but no session_id was captured"
             resume_for_completed = resume
