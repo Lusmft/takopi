@@ -181,51 +181,63 @@ def _latest_transcript_assistant_text(
     session_id: str,
     *,
     started_at: float,
+    attempts: int = 6,
+    delay_s: float = 0.5,
 ) -> str | None:
     # Claude Code occasionally writes final text to its durable transcript while
     # emitting an empty stream-json result. Use the transcript only for the
     # current run window so old resume-session answers are not replayed.
     cutoff = started_at - 10
-    for path in _claude_transcript_candidates(session_id):
-        latest_text: str | None = None
-        try:
-            with path.open(encoding="utf-8") as fp:
-                for line in fp:
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if row.get("type") != "assistant":
-                        continue
-                    timestamp = _parse_transcript_timestamp(row.get("timestamp"))
-                    if timestamp is None or timestamp < cutoff:
-                        continue
-                    message = row.get("message")
-                    if not isinstance(message, dict) or message.get("role") != "assistant":
-                        continue
-                    content = message.get("content")
-                    if not isinstance(content, list):
-                        continue
-                    for block in content:
-                        if not isinstance(block, dict) or block.get("type") != "text":
+    for attempt in range(max(1, attempts)):
+        for path in _claude_transcript_candidates(session_id):
+            latest_text: str | None = None
+            try:
+                with path.open(encoding="utf-8") as fp:
+                    for line in fp:
+                        try:
+                            row = json.loads(line)
+                        except json.JSONDecodeError:
                             continue
-                        text = block.get("text")
-                        if isinstance(text, str) and text.strip():
-                            latest_text = text
-        except OSError as exc:
-            logger.warning(
-                "claude.transcript_recovery.read_failed",
-                path=str(path),
-                error=str(exc),
-            )
-            continue
-        if latest_text:
-            logger.warning(
-                "claude.transcript_recovery.used",
-                path=str(path),
-                text_len=len(latest_text),
-            )
-            return latest_text
+                        if row.get("type") != "assistant":
+                            continue
+                        timestamp = _parse_transcript_timestamp(row.get("timestamp"))
+                        if timestamp is None or timestamp < cutoff:
+                            continue
+                        message = row.get("message")
+                        if (
+                            not isinstance(message, dict)
+                            or message.get("role") != "assistant"
+                        ):
+                            continue
+                        content = message.get("content")
+                        if not isinstance(content, list):
+                            continue
+                        for block in content:
+                            if (
+                                not isinstance(block, dict)
+                                or block.get("type") != "text"
+                            ):
+                                continue
+                            text = block.get("text")
+                            if isinstance(text, str) and text.strip():
+                                latest_text = text
+            except OSError as exc:
+                logger.warning(
+                    "claude.transcript_recovery.read_failed",
+                    path=str(path),
+                    error=str(exc),
+                )
+                continue
+            if latest_text:
+                logger.warning(
+                    "claude.transcript_recovery.used",
+                    path=str(path),
+                    text_len=len(latest_text),
+                    attempt=attempt + 1,
+                )
+                return latest_text
+        if attempt + 1 < attempts:
+            time.sleep(delay_s)
     return None
 
 
