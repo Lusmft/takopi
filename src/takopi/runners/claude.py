@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import datetime
+import json
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -33,6 +36,7 @@ class ClaudeStreamState:
     factory: EventFactory = field(default_factory=lambda: EventFactory(ENGINE))
     pending_actions: dict[str, Action] = field(default_factory=dict)
     last_assistant_text: str | None = None
+    started_at: float = field(default_factory=time.time)
     note_seq: int = 0
 
 
@@ -154,6 +158,77 @@ def _usage_payload(event: claude_schema.StreamResultMessage) -> dict[str, Any]:
     return usage
 
 
+def _parse_transcript_timestamp(value: Any) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.timestamp()
+
+
+def _claude_transcript_candidates(session_id: str) -> list[Path]:
+    projects_dir = Path.home() / ".claude" / "projects"
+    if not projects_dir.is_dir():
+        return []
+    candidates = list(projects_dir.glob(f"*/{session_id}.jsonl"))
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates
+
+
+def _latest_transcript_assistant_text(
+    session_id: str,
+    *,
+    started_at: float,
+) -> str | None:
+    # Claude Code occasionally writes final text to its durable transcript while
+    # emitting an empty stream-json result. Use the transcript only for the
+    # current run window so old resume-session answers are not replayed.
+    cutoff = started_at - 10
+    for path in _claude_transcript_candidates(session_id):
+        latest_text: str | None = None
+        try:
+            with path.open(encoding="utf-8") as fp:
+                for line in fp:
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if row.get("type") != "assistant":
+                        continue
+                    timestamp = _parse_transcript_timestamp(row.get("timestamp"))
+                    if timestamp is None or timestamp < cutoff:
+                        continue
+                    message = row.get("message")
+                    if not isinstance(message, dict) or message.get("role") != "assistant":
+                        continue
+                    content = message.get("content")
+                    if not isinstance(content, list):
+                        continue
+                    for block in content:
+                        if not isinstance(block, dict) or block.get("type") != "text":
+                            continue
+                        text = block.get("text")
+                        if isinstance(text, str) and text.strip():
+                            latest_text = text
+        except OSError as exc:
+            logger.warning(
+                "claude.transcript_recovery.read_failed",
+                path=str(path),
+                error=str(exc),
+            )
+            continue
+        if latest_text:
+            logger.warning(
+                "claude.transcript_recovery.used",
+                path=str(path),
+                text_len=len(latest_text),
+            )
+            return latest_text
+    return None
+
+
 def translate_claude_event(
     event: claude_schema.StreamJsonMessage,
     *,
@@ -260,6 +335,14 @@ def translate_claude_event(
             result_text = event.result or ""
             if ok and not result_text and state.last_assistant_text:
                 result_text = state.last_assistant_text
+            if ok and not result_text:
+                result_text = (
+                    _latest_transcript_assistant_text(
+                        event.session_id,
+                        started_at=state.started_at,
+                    )
+                    or ""
+                )
 
             resume = ResumeToken(engine=ENGINE, value=event.session_id)
             error = None if ok else _extract_error(event)

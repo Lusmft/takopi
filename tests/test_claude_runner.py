@@ -128,6 +128,67 @@ def test_translate_success_fixture() -> None:
     assert completed.answer == "I see README.md, pyproject.toml, and src/."
 
 
+def test_empty_success_result_recovers_latest_transcript_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    session_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    transcript = tmp_path / ".claude" / "projects" / "-root-tgsmm" / f"{session_id}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "timestamp": "1970-01-01T00:16:20.000Z",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "old answer"}],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "timestamp": "1970-01-01T00:16:50.000Z",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "recovered answer"}],
+                        },
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    state = ClaudeStreamState(started_at=1000)
+
+    events = translate_claude_event(
+        _decode_event(
+            {
+                "type": "result",
+                "session_id": session_id,
+                "subtype": "success",
+                "duration_ms": 1000,
+                "duration_api_ms": 900,
+                "is_error": False,
+                "num_turns": 1,
+                "result": "",
+            }
+        ),
+        title="claude",
+        state=state,
+        factory=state.factory,
+    )
+
+    assert len(events) == 1
+    completed = events[0]
+    assert isinstance(completed, CompletedEvent)
+    assert completed.ok is True
+    assert completed.answer == "recovered answer"
+
+
 def test_translate_error_fixture_permission_denials() -> None:
     state = ClaudeStreamState()
     events: list = []
