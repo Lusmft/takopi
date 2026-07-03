@@ -181,6 +181,7 @@ def _latest_transcript_assistant_text(
     session_id: str,
     *,
     started_at: float,
+    ended_at: float | None = None,
     attempts: int = 6,
     delay_s: float = 0.5,
 ) -> str | None:
@@ -188,6 +189,7 @@ def _latest_transcript_assistant_text(
     # emitting an empty stream-json result. Use the transcript only for the
     # current run window so old resume-session answers are not replayed.
     cutoff = started_at - 10
+    upper_bound = (ended_at if ended_at is not None else time.time()) + 10
     for attempt in range(max(1, attempts)):
         for path in _claude_transcript_candidates(session_id):
             latest_text: str | None = None
@@ -201,7 +203,11 @@ def _latest_transcript_assistant_text(
                         if row.get("type") != "assistant":
                             continue
                         timestamp = _parse_transcript_timestamp(row.get("timestamp"))
-                        if timestamp is None or timestamp < cutoff:
+                        if (
+                            timestamp is None
+                            or timestamp < cutoff
+                            or timestamp > upper_bound
+                        ):
                             continue
                         message = row.get("message")
                         if (
@@ -241,12 +247,29 @@ def _latest_transcript_assistant_text(
     return None
 
 
+def _latest_transcript_assistant_text_for_sessions(
+    session_ids: list[str],
+    *,
+    started_at: float,
+) -> str | None:
+    for session_id in session_ids:
+        recovered = _latest_transcript_assistant_text(
+            session_id,
+            started_at=started_at,
+        )
+        if recovered:
+            return recovered
+    return None
+
+
 def translate_claude_event(
     event: claude_schema.StreamJsonMessage,
     *,
     title: str,
     state: ClaudeStreamState,
     factory: EventFactory,
+    resume: ResumeToken | None = None,
+    found_session: ResumeToken | None = None,
 ) -> list[TakopiEvent]:
     match event:
         case claude_schema.StreamSystemMessage(subtype=subtype):
@@ -348,9 +371,13 @@ def translate_claude_event(
             if ok and not result_text.strip() and state.last_assistant_text:
                 result_text = state.last_assistant_text
             if ok and not result_text.strip():
+                session_ids = [event.session_id]
+                for token in (found_session, resume):
+                    if token is not None and token.value not in session_ids:
+                        session_ids.append(token.value)
                 result_text = (
-                    _latest_transcript_assistant_text(
-                        event.session_id,
+                    _latest_transcript_assistant_text_for_sessions(
+                        session_ids,
                         started_at=state.started_at,
                     )
                     or ""
@@ -505,6 +532,8 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
             title=self.session_title,
             state=state,
             factory=state.factory,
+            resume=resume,
+            found_session=found_session,
         )
 
     def process_error_events(

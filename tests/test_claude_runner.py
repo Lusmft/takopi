@@ -189,6 +189,57 @@ def test_empty_success_result_recovers_latest_transcript_text(
     assert completed.answer == "recovered answer"
 
 
+def test_empty_success_result_recovers_from_resume_session_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    event_session_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    resume_session_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    transcript = (
+        tmp_path / ".claude" / "projects" / "-root-tgsmm" / f"{resume_session_id}.jsonl"
+    )
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "timestamp": "1970-01-01T00:16:45.000Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "resume transcript answer"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = ClaudeStreamState(started_at=1000)
+
+    events = translate_claude_event(
+        _decode_event(
+            {
+                "type": "result",
+                "session_id": event_session_id,
+                "subtype": "success",
+                "duration_ms": 1000,
+                "duration_api_ms": 900,
+                "is_error": False,
+                "num_turns": 1,
+                "result": "",
+            }
+        ),
+        title="claude",
+        state=state,
+        factory=state.factory,
+        resume=ResumeToken(engine=ENGINE, value=resume_session_id),
+    )
+
+    assert len(events) == 1
+    completed = events[0]
+    assert isinstance(completed, CompletedEvent)
+    assert completed.ok is True
+    assert completed.answer == "resume transcript answer"
+
+
 def test_translate_error_fixture_permission_denials() -> None:
     state = ClaudeStreamState()
     events: list = []
