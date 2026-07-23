@@ -10,6 +10,7 @@ import typer
 
 from ..jobs import (
     JobError,
+    background_guard_decision,
     cancel_job,
     job_status,
     list_jobs,
@@ -85,3 +86,17 @@ def jobs_worker(job_id: str) -> None:
         _fail(exc)
     if return_code:
         raise typer.Exit(code=return_code)
+
+
+@jobs_app.command("guard", hidden=True)
+def jobs_guard() -> None:
+    """Enforce durable jobs for Claude Code background Bash calls."""
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError):
+        return
+    if not isinstance(payload, dict):
+        return
+    decision = background_guard_decision(payload)
+    if decision is not None:
+        typer.echo(json.dumps(decision, separators=(",", ":")))

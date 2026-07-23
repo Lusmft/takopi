@@ -63,6 +63,49 @@ def test_launch_job_uses_transient_systemd_unit(monkeypatch) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("tool_input", "reason_fragment"),
+    [
+        ({"command": "make release", "run_in_background": True}, "run_in_background"),
+        ({"command": "nohup make release >/tmp/release.log 2>&1 &"}, "detached"),
+        ({"command": "setsid ./deploy.sh"}, "detached"),
+        ({"command": "./deploy.sh &"}, "background operator"),
+        ({"command": "systemd-run --unit=release ./deploy.sh"}, "systemd-run"),
+    ],
+)
+def test_background_guard_denies_non_durable_bash(
+    tool_input: dict[str, object], reason_fragment: str
+) -> None:
+    decision = jobs.background_guard_decision(
+        {"tool_name": "Bash", "tool_input": tool_input}
+    )
+
+    assert decision is not None
+    output = decision["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert reason_fragment in output["permissionDecisionReason"]
+    assert "takopi jobs start" in output["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest -q",
+        "make release 2>&1 | tee release.log",
+        "systemd-run --pipe --wait --collect pytest -q",
+        "takopi jobs start release --script /tmp/release.sh --chat-id 123",
+        'echo "literal & text"',
+    ],
+)
+def test_background_guard_allows_foreground_bash(command: str) -> None:
+    assert (
+        jobs.background_guard_decision(
+            {"tool_name": "Bash", "tool_input": {"command": command}}
+        )
+        is None
+    )
+
+
 def test_worker_records_success_and_notifies(monkeypatch, tmp_path: Path) -> None:
     script = tmp_path / "source.sh"
     script.write_text("echo deployed\n", encoding="utf-8")
