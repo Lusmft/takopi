@@ -141,6 +141,15 @@ _ARTIFACT_DELIVERY_HINT = """
 If the user asks to see, receive, or send a screenshot/image/file, do not only describe it in text. Create the requested visual artifact as an actual image file inside the current working directory, preferably under ./artifacts/ with a clear .png/.jpg/.webp/.svg filename. After you create the file, mention its relative path briefly. The Telegram transport will upload recently-created image artifacts automatically after your run finishes.
 """.strip()
 
+_DURABLE_JOBS_HINT = """
+[Takopi durable jobs]
+This agent runs as a one-shot subprocess. Background Bash tasks are stopped when
+the run finishes. If you promise to wait and act later, do not use
+run_in_background. Write a self-contained shell script, then start it with:
+`takopi jobs start <unique-id> --script <path> --chat-id {chat_id} --timeout <seconds>`.
+The durable job survives this run and sends its final output to this chat.
+""".strip()
+
 
 def _is_image_request(text: str) -> bool:
     lowered = text.lower()
@@ -151,6 +160,10 @@ def _with_artifact_delivery_hint(text: str) -> str:
     if not _is_image_request(text):
         return text
     return f"{text.rstrip()}\n\n{_ARTIFACT_DELIVERY_HINT}"
+
+
+def _with_durable_jobs_hint(text: str, *, chat_id: int) -> str:
+    return f"{text.rstrip()}\n\n{_DURABLE_JOBS_HINT.format(chat_id=chat_id)}"
 
 
 async def _send_runner_unavailable(
@@ -256,6 +269,8 @@ async def _run_engine(
             context_line = runtime.format_context_line(context)
             is_image_request = _is_image_request(text)
             started_wall_time = time.time()
+            if runner.engine == "claude":
+                text = _with_durable_jobs_hint(text, chat_id=chat_id)
             incoming = RunnerIncomingMessage(
                 channel_id=chat_id,
                 message_id=user_msg_id,

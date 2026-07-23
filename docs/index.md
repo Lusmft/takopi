@@ -73,7 +73,7 @@ Step-by-step guides for new users:
 ## How-to guides
 
 - [Chat sessions](how-to/chat-sessions.md), [Topics](how-to/topics.md), [Projects](how-to/projects.md), [Worktrees](how-to/worktrees.md)
-- [Voice notes](how-to/voice-notes.md), [File transfer](how-to/file-transfer.md), [Schedule tasks](how-to/schedule-tasks.md)
+- [Voice notes](how-to/voice-notes.md), [File transfer](how-to/file-transfer.md), [Schedule tasks](how-to/schedule-tasks.md), [Durable jobs](how-to/durable-jobs.md)
 - [Write a plugin](how-to/write-a-plugin.md), [Add a runner](how-to/add-a-runner.md), [Dev setup](how-to/dev-setup.md)
 
 ## Reference
