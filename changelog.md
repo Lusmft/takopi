@@ -1,5 +1,12 @@
 # changelog
 
+## v0.23.4+lusmft.2 (2026-07-23)
+
+### fixes
+
+- enforce durable jobs for one-shot Claude Bash calls by denying ephemeral
+  `run_in_background`, detached shell commands, and callback-less systemd units
+
 ## v0.23.4+lusmft.1 (2026-07-23)
 
 ### changes

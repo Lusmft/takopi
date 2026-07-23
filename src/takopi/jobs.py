@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -19,10 +20,68 @@ from .telegram.client import TelegramClient
 
 JOBS_ROOT = Path.home() / ".takopi" / "jobs"
 _JOB_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+_DETACHED_COMMAND_RE = re.compile(
+    r"(^|[\s;|()])(nohup|setsid|disown)(?=\s|$)",
+    re.IGNORECASE,
+)
 
 
 class JobError(RuntimeError):
     pass
+
+
+def background_guard_reason(tool_input: dict[str, Any]) -> str | None:
+    """Return why a Bash tool call must use a durable job, if applicable."""
+    if tool_input.get("run_in_background") is True:
+        return "Bash run_in_background is not durable after this Claude run exits"
+
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None
+    if _DETACHED_COMMAND_RE.search(command):
+        return "detached shell commands are not durable after this Claude run exits"
+
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        tokens = command.split()
+    if "&" in tokens:
+        return (
+            "shell background operator '&' is not durable after this Claude run exits"
+        )
+
+    executable_names = {Path(token).name for token in tokens}
+    if "systemd-run" in executable_names and "--wait" not in tokens:
+        return "direct detached systemd-run has no Takopi completion callback"
+    return None
+
+
+def background_guard_decision(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a Claude Code PreToolUse denial for unsafe background Bash calls."""
+    if payload.get("tool_name") != "Bash":
+        return None
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    reason = background_guard_reason(tool_input)
+    if reason is None:
+        return None
+    guidance = (
+        f"{reason}. Do not retry with nohup, setsid, '&', or detached systemd-run. "
+        "Write the complete wait/action/verification flow to a shell script and run "
+        "`takopi jobs start <unique-id> --script <path> --chat-id <chat-id> "
+        "--timeout <seconds> --title <title>`. The durable job sends the final "
+        "output to Telegram."
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": guidance,
+        }
+    }
 
 
 def validate_job_id(value: str) -> str:

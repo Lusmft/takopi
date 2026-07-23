@@ -4,6 +4,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -437,6 +438,32 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
     session_title: str = "claude"
     logger = logger
 
+    def _settings(self, *, always_thinking: bool) -> str | None:
+        settings: dict[str, Any] = {}
+        if always_thinking:
+            settings["alwaysThinkingEnabled"] = True
+        takopi_executable = shutil.which("takopi")
+        if takopi_executable is not None:
+            settings["hooks"] = {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": shlex.join(
+                                    [takopi_executable, "jobs", "guard"]
+                                ),
+                                "timeout": 5,
+                            }
+                        ],
+                    }
+                ]
+            }
+        if not settings:
+            return None
+        return json.dumps(settings, separators=(",", ":"))
+
     def format_resume(self, token: ResumeToken) -> str:
         if token.engine != ENGINE:
             raise RuntimeError(f"resume token is for engine {token.engine!r}")
@@ -457,9 +484,12 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
             args.extend(["--allowedTools", allowed_tools])
         if self.dangerously_skip_permissions is True:
             args.append("--dangerously-skip-permissions")
-        if run_options is not None and run_options.reasoning:
+        always_thinking = bool(run_options is not None and run_options.reasoning)
+        if always_thinking:
             args.extend(["--effort", str(run_options.reasoning)])
-            args.extend(["--settings", '{"alwaysThinkingEnabled":true}'])
+        settings = self._settings(always_thinking=always_thinking)
+        if settings is not None:
+            args.extend(["--settings", settings])
         args.append("--")
         args.append(prompt)
         return args
