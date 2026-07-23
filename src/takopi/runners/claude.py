@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import datetime
+import json
 import os
 import re
 import shutil
-import datetime
-import json
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -36,7 +36,9 @@ _RESUME_RE = re.compile(
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
-def _tmux_run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _tmux_run(
+    args: list[str], *, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     proc = subprocess.run(
         ["tmux", *args],
         text=True,
@@ -68,10 +70,22 @@ def _normalize_interactive_text(text: str) -> str:
     text = ANSI_RE.sub("", text).replace("\u00a0", " ")
     lines: list[str] = []
     chrome_markers = [
-        "Claude Code v", "Welcome back", "Tips for getting", "Quick safety check",
-        "Accessing workspace", "Security guide", "Enter to confirm", "Esc to cancel",
-        "Yes, I trust this folder", "No, exit", "Welcome to Opus", "context)",
-        "? for shortcuts", "Auto-updating", "/effort to tune", "/root",
+        "Claude Code v",
+        "Welcome back",
+        "Tips for getting",
+        "Quick safety check",
+        "Accessing workspace",
+        "Security guide",
+        "Enter to confirm",
+        "Esc to cancel",
+        "Yes, I trust this folder",
+        "No, exit",
+        "Welcome to Opus",
+        "context)",
+        "? for shortcuts",
+        "Auto-updating",
+        "/effort to tune",
+        "/root",
     ]
     for raw in text.splitlines():
         line = raw.rstrip()
@@ -79,7 +93,9 @@ def _normalize_interactive_text(text: str) -> str:
             continue
         if line.startswith(("─", "╭", "╰", "│")):
             continue
-        if any(marker in line for marker in chrome_markers) and not line.strip().startswith(("●", "⏺")):
+        if any(
+            marker in line for marker in chrome_markers
+        ) and not line.strip().startswith(("●", "⏺")):
             continue
         if re.fullmatch(r"[▐▛▜▌▝▘█ ]+", line.strip()):
             continue
@@ -89,11 +105,11 @@ def _normalize_interactive_text(text: str) -> str:
 
 def _extract_interactive_answer(before: str, after: str, prompt: str) -> str:
     if after.startswith(before):
-        suffix = after[len(before):]
+        suffix = after[len(before) :]
     else:
         # capture-pane scrollback may trim old content, so anchor on the latest user prompt
         idx = after.rfind(prompt)
-        suffix = after[idx + len(prompt):] if idx >= 0 else after
+        suffix = after[idx + len(prompt) :] if idx >= 0 else after
     clean = _normalize_interactive_text(suffix)
     out: list[str] = []
     prompt_text = prompt.strip()
@@ -141,6 +157,7 @@ def _extract_interactive_answer(before: str, after: str, prompt: str) -> str:
         out.append(s)
     return "\n".join(out).strip()
 
+
 def _slash_segment_after_latest_prompt(prompt: str, pane: str) -> str:
     prompt_text = prompt.strip()
     lines = pane.splitlines()
@@ -164,7 +181,10 @@ def _is_interactive_slash_overlay(prompt: str, pane: str) -> bool:
     if not segment:
         return False
     # Ignore stale scrollback and the dismissal line from the previous overlay.
-    if "Settings dialog dismissed" in segment and "Settings  Status   Config   Usage   Stats" not in segment:
+    if (
+        "Settings dialog dismissed" in segment
+        and "Settings  Status   Config   Usage   Stats" not in segment
+    ):
         return False
     indicators = [
         "Settings  Status   Config   Usage   Stats",
@@ -207,7 +227,9 @@ def _format_interactive_slash_overlay(prompt: str, pane: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _render_overlay_png(text: str, *, cwd: str, name_hint: str = "claude_usage") -> str | None:
+def _render_overlay_png(
+    text: str, *, cwd: str, name_hint: str = "claude_usage"
+) -> str | None:
     """Render monospace overlay text to a PNG using system python3/Pillow.
 
     Takopi's venv may not have Pillow, while the host python usually does.
@@ -265,7 +287,9 @@ img.save(out)
         return None
 
 
-def _wait_interactive_answer(session: str, before: str, prompt: str, timeout_s: int, *, cwd: str = "/root") -> str:
+def _wait_interactive_answer(
+    session: str, before: str, prompt: str, timeout_s: int, *, cwd: str = "/root"
+) -> str:
     last = ""
     stable = 0
     deadline = time.time() + timeout_s
@@ -276,7 +300,11 @@ def _wait_interactive_answer(session: str, before: str, prompt: str, timeout_s: 
             # the tmux session returns to prompt. Telegram artifact collection will
             # upload the generated PNG after the run.
             answer = _format_interactive_slash_overlay(prompt, cur)
-            rel_png = _render_overlay_png(answer, cwd=cwd, name_hint="claude_usage") if answer else None
+            rel_png = (
+                _render_overlay_png(answer, cwd=cwd, name_hint="claude_usage")
+                if answer
+                else None
+            )
             subprocess.run(["tmux", "send-keys", "-t", session, "Escape"], check=False)
             if rel_png:
                 return f"Скриншот: {rel_png}"
@@ -295,7 +323,9 @@ def _wait_interactive_answer(session: str, before: str, prompt: str, timeout_s: 
     return last or _extract_interactive_answer(before, _tmux_capture(session), prompt)
 
 
-def _ensure_interactive_claude_session(*, session: str, cwd: str, claude_cmd: str) -> None:
+def _ensure_interactive_claude_session(
+    *, session: str, cwd: str, claude_cmd: str
+) -> None:
     if _tmux_has_session(session):
         current_cwd = _tmux_run(
             ["display-message", "-p", "-t", session, "#{pane_current_path}"],
@@ -317,12 +347,27 @@ def _ensure_interactive_claude_session(*, session: str, cwd: str, claude_cmd: st
         )
         _tmux_run(["kill-session", "-t", session], check=False)
     subprocess.run(
-        ["tmux", "new-session", "-d", "-x", "180", "-y", "50", "-s", session, "-c", cwd, claude_cmd],
+        [
+            "tmux",
+            "new-session",
+            "-d",
+            "-x",
+            "180",
+            "-y",
+            "50",
+            "-s",
+            session,
+            "-c",
+            cwd,
+            claude_cmd,
+        ],
         check=True,
     )
     # Detached tmux defaults to 80x24 unless told otherwise; Claude Code's /usage
     # hides the wide limit columns in narrow terminals.
-    subprocess.run(["tmux", "resize-window", "-t", session, "-x", "180", "-y", "50"], check=False)
+    subprocess.run(
+        ["tmux", "resize-window", "-t", session, "-x", "180", "-y", "50"], check=False
+    )
     time.sleep(3)
     out = _tmux_capture(session)
     if "Yes, I trust this folder" in out:
@@ -335,6 +380,9 @@ class ClaudeStreamState:
     factory: EventFactory = field(default_factory=lambda: EventFactory(ENGINE))
     pending_actions: dict[str, Action] = field(default_factory=dict)
     last_assistant_text: str | None = None
+    started_at: float = field(default_factory=time.time)
+    empty_success_session_id: str | None = None
+    empty_success_usage: dict[str, Any] | None = None
     note_seq: int = 0
 
 
@@ -456,12 +504,135 @@ def _usage_payload(event: claude_schema.StreamResultMessage) -> dict[str, Any]:
     return usage
 
 
+def _parse_transcript_timestamp(value: Any) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.timestamp()
+
+
+def _claude_transcript_candidates(session_id: str) -> list[Path]:
+    projects_dir = Path.home() / ".claude" / "projects"
+    if not projects_dir.is_dir():
+        return []
+    candidates = list(projects_dir.glob(f"*/{session_id}.jsonl"))
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates
+
+
+def _latest_transcript_assistant_text(
+    session_id: str,
+    *,
+    started_at: float,
+    ended_at: float | None = None,
+    attempts: int = 6,
+    delay_s: float = 0.5,
+) -> str | None:
+    # Claude Code occasionally writes final text to its durable transcript while
+    # emitting an empty stream-json result. Use the transcript only for the
+    # current run window so old resume-session answers are not replayed.
+    cutoff = started_at - 10
+    upper_bound = (ended_at if ended_at is not None else time.time()) + 10
+    for attempt in range(max(1, attempts)):
+        for path in _claude_transcript_candidates(session_id):
+            latest_text: str | None = None
+            try:
+                with path.open(encoding="utf-8") as fp:
+                    for line in fp:
+                        try:
+                            row = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if row.get("type") != "assistant":
+                            continue
+                        timestamp = _parse_transcript_timestamp(row.get("timestamp"))
+                        if (
+                            timestamp is None
+                            or timestamp < cutoff
+                            or timestamp > upper_bound
+                        ):
+                            continue
+                        message = row.get("message")
+                        if (
+                            not isinstance(message, dict)
+                            or message.get("role") != "assistant"
+                        ):
+                            continue
+                        content = message.get("content")
+                        if not isinstance(content, list):
+                            continue
+                        for block in content:
+                            if (
+                                not isinstance(block, dict)
+                                or block.get("type") != "text"
+                            ):
+                                continue
+                            text = block.get("text")
+                            if isinstance(text, str) and text.strip():
+                                latest_text = text
+            except OSError as exc:
+                logger.warning(
+                    "claude.transcript_recovery.read_failed",
+                    path=str(path),
+                    error=str(exc),
+                )
+                continue
+            if latest_text:
+                logger.warning(
+                    "claude.transcript_recovery.used",
+                    path=str(path),
+                    text_len=len(latest_text),
+                    attempt=attempt + 1,
+                )
+                return latest_text
+        if attempt + 1 < attempts:
+            time.sleep(delay_s)
+    return None
+
+
+def _latest_transcript_assistant_text_for_sessions(
+    session_ids: list[str],
+    *,
+    started_at: float,
+    attempts: int = 6,
+    delay_s: float = 0.5,
+) -> str | None:
+    for session_id in session_ids:
+        recovered = _latest_transcript_assistant_text(
+            session_id,
+            started_at=started_at,
+            attempts=attempts,
+            delay_s=delay_s,
+        )
+        if recovered:
+            return recovered
+    return None
+
+
+def _transcript_recovery_session_ids(
+    session_id: str | None,
+    *,
+    found_session: ResumeToken | None,
+    resume: ResumeToken | None,
+) -> list[str]:
+    session_ids = [session_id] if session_id else []
+    for token in (found_session, resume):
+        if token is not None and token.value not in session_ids:
+            session_ids.append(token.value)
+    return session_ids
+
+
 def translate_claude_event(
     event: claude_schema.StreamJsonMessage,
     *,
     title: str,
     state: ClaudeStreamState,
     factory: EventFactory,
+    resume: ResumeToken | None = None,
+    found_session: ResumeToken | None = None,
 ) -> list[TakopiEvent]:
     match event:
         case claude_schema.StreamSystemMessage(subtype=subtype):
@@ -560,8 +731,25 @@ def translate_claude_event(
         case claude_schema.StreamResultMessage():
             ok = not event.is_error
             result_text = event.result or ""
-            if ok and not result_text and state.last_assistant_text:
+            if ok and not result_text.strip() and state.last_assistant_text:
                 result_text = state.last_assistant_text
+            if ok and not result_text.strip():
+                session_ids = _transcript_recovery_session_ids(
+                    event.session_id,
+                    found_session=found_session,
+                    resume=resume,
+                )
+                result_text = (
+                    _latest_transcript_assistant_text_for_sessions(
+                        session_ids,
+                        started_at=state.started_at,
+                    )
+                    or ""
+                )
+                if not result_text.strip():
+                    state.empty_success_session_id = event.session_id
+                    state.empty_success_usage = _usage_payload(event) or None
+                    return []
 
             resume = ResumeToken(engine=ENGINE, value=event.session_id)
             error = None if ok else _extract_error(event)
@@ -618,8 +806,14 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
                 yield evt
             return
         import anyio
+
         token = resume or ResumeToken(engine=ENGINE, value=self.interactive_session)
-        yield StartedEvent(engine=ENGINE, resume=token, title=self.session_title, meta={"mode": "interactive"})
+        yield StartedEvent(
+            engine=ENGINE,
+            resume=token,
+            title=self.session_title,
+            meta={"mode": "interactive"},
+        )
         run_cwd = str(get_run_base_dir() or Path(self.interactive_cwd))
         await anyio.to_thread.run_sync(
             lambda: _ensure_interactive_claude_session(
@@ -629,7 +823,9 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
             )
         )
         before = await anyio.to_thread.run_sync(_tmux_capture, self.interactive_session)
-        await anyio.to_thread.run_sync(_tmux_send_text, self.interactive_session, prompt)
+        await anyio.to_thread.run_sync(
+            _tmux_send_text, self.interactive_session, prompt
+        )
         answer = await anyio.to_thread.run_sync(
             lambda: _wait_interactive_answer(
                 self.interactive_session,
@@ -755,6 +951,8 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
             title=self.session_title,
             state=state,
             factory=state.factory,
+            resume=resume,
+            found_session=found_session,
         )
 
     def process_error_events(
@@ -782,6 +980,40 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         found_session: ResumeToken | None,
         state: ClaudeStreamState,
     ) -> list[TakopiEvent]:
+        if state.empty_success_session_id is not None:
+            resume_for_completed = found_session or resume
+            session_ids = _transcript_recovery_session_ids(
+                state.empty_success_session_id,
+                found_session=found_session,
+                resume=resume,
+            )
+            answer = (
+                state.last_assistant_text
+                or _latest_transcript_assistant_text_for_sessions(
+                    session_ids,
+                    started_at=state.started_at,
+                    attempts=1,
+                    delay_s=0,
+                )
+                or ""
+            )
+            if answer.strip():
+                return [
+                    state.factory.completed_ok(
+                        answer=answer,
+                        resume=resume_for_completed,
+                        usage=state.empty_success_usage,
+                    )
+                ]
+            message = "claude finished with an empty result"
+            return [
+                state.factory.completed_error(
+                    error=message,
+                    resume=resume_for_completed,
+                    usage=state.empty_success_usage,
+                )
+            ]
+
         if not found_session:
             message = "claude finished but no session_id was captured"
             resume_for_completed = resume

@@ -1,5 +1,14 @@
 # changelog
 
+## v0.23.4+lusmft.1 (2026-07-23)
+
+### changes
+
+- add systemd-backed durable jobs that survive one-shot agent completion and
+  send their final result through the configured Telegram bot
+- teach Telegram Claude runs to use `takopi jobs` instead of ephemeral
+  `run_in_background` tasks for promised follow-up work
+
 ## v0.23.4 (2026-05-25)
 
 ### changes

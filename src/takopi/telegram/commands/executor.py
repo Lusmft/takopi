@@ -141,6 +141,15 @@ _ARTIFACT_DELIVERY_HINT = """
 If the user asks to see, receive, or send a screenshot/image/file, do not only describe it in text. Create the requested visual artifact as an actual image file inside the current working directory, preferably under ./artifacts/ with a clear .png/.jpg/.webp/.svg filename. After you create the file, mention its relative path briefly. The Telegram transport will upload recently-created image artifacts automatically after your run finishes.
 """.strip()
 
+_DURABLE_JOBS_HINT = """
+[Takopi durable jobs]
+This agent runs as a one-shot subprocess. Background Bash tasks are stopped when
+the run finishes. If you promise to wait and act later, do not use
+run_in_background. Write a self-contained shell script, then start it with:
+`takopi jobs start <unique-id> --script <path> --chat-id {chat_id} --timeout <seconds>`.
+The durable job survives this run and sends its final output to this chat.
+""".strip()
+
 
 def _is_image_request(text: str) -> bool:
     lowered = text.lower()
@@ -162,6 +171,10 @@ def _interactive_slash_command(text: str) -> str | None:
     if normalized in {"/usage", "/status", "/config", "/stats"}:
         return normalized
     return None
+
+
+def _with_durable_jobs_hint(text: str, *, chat_id: int) -> str:
+    return f"{text.rstrip()}\n\n{_DURABLE_JOBS_HINT.format(chat_id=chat_id)}"
 
 
 async def _send_runner_unavailable(
@@ -267,12 +280,18 @@ async def _run_engine(
             context_line = runtime.format_context_line(context)
             slash_command = _interactive_slash_command(text)
             runner_text = slash_command or text
-            is_image_request = False if slash_command is not None else _is_image_request(text)
+            is_image_request = (
+                False if slash_command is not None else _is_image_request(text)
+            )
             started_wall_time = time.time()
+            if runner.engine == "claude" and slash_command is None:
+                runner_text = _with_durable_jobs_hint(runner_text, chat_id=chat_id)
             incoming = RunnerIncomingMessage(
                 channel_id=chat_id,
                 message_id=user_msg_id,
-                text=runner_text if slash_command is not None else _with_artifact_delivery_hint(runner_text),
+                text=runner_text
+                if slash_command is not None
+                else _with_artifact_delivery_hint(runner_text),
                 reply_to=reply_ref,
                 thread_id=thread_id,
             )
@@ -283,7 +302,9 @@ async def _run_engine(
                 completed_cwd: Path | None,
             ) -> None:
                 if telegram_cfg is None:
-                    logger.info("telegram.artifacts.skipped", reason="missing_telegram_cfg")
+                    logger.info(
+                        "telegram.artifacts.skipped", reason="missing_telegram_cfg"
+                    )
                     return
                 sent_count = await send_image_artifacts(
                     telegram_cfg,
