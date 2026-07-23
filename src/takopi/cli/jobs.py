@@ -3,6 +3,7 @@ from __future__ import annotations
 # ruff: noqa: B008
 
 import json
+import sys
 from pathlib import Path
 
 import typer
@@ -43,6 +44,7 @@ def jobs_start(
             chat_id=chat_id,
             timeout_s=timeout_s,
             title=title,
+            takopi_executable=str(Path(sys.argv[0]).resolve()),
         )
     except JobError as exc:
         _fail(exc)
