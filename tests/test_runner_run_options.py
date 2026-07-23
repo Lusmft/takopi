@@ -1,3 +1,5 @@
+import json
+
 from takopi.model import ResumeToken
 from takopi.runners.claude import ClaudeRunner
 from takopi.runners.codex import CodexRunner
@@ -45,7 +47,9 @@ def test_claude_run_options_override_reasoning() -> None:
     assert "--effort" in args
     assert args[args.index("--effort") + 1] == "xhigh"
     assert "--settings" in args
-    assert args[args.index("--settings") + 1] == '{"alwaysThinkingEnabled":true}'
+    settings = json.loads(args[args.index("--settings") + 1])
+    assert settings["alwaysThinkingEnabled"] is True
+    assert settings["hooks"]["PreToolUse"][0]["matcher"] == "Bash"
 
 
 def test_opencode_run_options_override_model() -> None:

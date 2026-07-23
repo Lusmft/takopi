@@ -79,6 +79,23 @@ def test_build_runner_uses_shutil_which(monkeypatch) -> None:
     assert runner.claude_cmd == expected
 
 
+def test_claude_args_install_background_guard(monkeypatch) -> None:
+    monkeypatch.setattr(
+        claude_runner.shutil,
+        "which",
+        lambda name: "/root/.local/bin/takopi" if name == "takopi" else None,
+    )
+    runner = ClaudeRunner(claude_cmd="claude")
+
+    args = runner._build_args("hello", None)
+
+    settings_index = args.index("--settings") + 1
+    settings = json.loads(args[settings_index])
+    hook = settings["hooks"]["PreToolUse"][0]
+    assert hook["matcher"] == "Bash"
+    assert hook["hooks"][0]["command"] == "/root/.local/bin/takopi jobs guard"
+
+
 def test_translate_success_fixture() -> None:
     state = ClaudeStreamState()
     events: list = []
@@ -133,7 +150,9 @@ def test_empty_success_result_recovers_latest_transcript_text(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     session_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
-    transcript = tmp_path / ".claude" / "projects" / "-root-tgsmm" / f"{session_id}.jsonl"
+    transcript = (
+        tmp_path / ".claude" / "projects" / "-root-tgsmm" / f"{session_id}.jsonl"
+    )
     transcript.parent.mkdir(parents=True)
     transcript.write_text(
         "\n".join(
@@ -270,7 +289,9 @@ def test_early_empty_success_result_defers_until_process_end(
 
     assert events == []
 
-    transcript = tmp_path / ".claude" / "projects" / "-root-tgsmm" / f"{session_id}.jsonl"
+    transcript = (
+        tmp_path / ".claude" / "projects" / "-root-tgsmm" / f"{session_id}.jsonl"
+    )
     transcript.parent.mkdir(parents=True)
     transcript.write_text(
         json.dumps(
