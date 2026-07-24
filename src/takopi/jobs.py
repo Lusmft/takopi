@@ -19,15 +19,51 @@ from .telegram.client import TelegramClient
 
 
 JOBS_ROOT = Path.home() / ".takopi" / "jobs"
+MIN_RELEASE_DEPLOY_TIMEOUT_S = 90 * 60
 _JOB_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 _DETACHED_COMMAND_RE = re.compile(
     r"(^|[\s;|()])(nohup|setsid|disown)(?=\s|$)",
     re.IGNORECASE,
 )
+_GH_RUN_WATCH_RE = re.compile(r"(^|[\s;&|])gh\s+run\s+watch(?=\s|$)", re.IGNORECASE)
 
 
 class JobError(RuntimeError):
     pass
+
+
+def _is_release_deploy_job(*, job_id: str, title: str | None, script: str) -> bool:
+    metadata = f"{job_id}\n{title or ''}".lower()
+    script_lower = script.lower()
+    return (
+        any(marker in metadata for marker in ("release", "deploy"))
+        or "make release" in script_lower
+        or "gh run " in script_lower
+    )
+
+
+def validate_job_script(
+    *,
+    job_id: str,
+    title: str | None,
+    script: str,
+    timeout_s: int,
+) -> None:
+    """Reject fragile durable-job patterns before starting external work."""
+    if _GH_RUN_WATCH_RE.search(script):
+        raise JobError(
+            "durable jobs must not use interactive `gh run watch`; poll "
+            "`gh run view <id> --json status,conclusion` quietly and print only "
+            "state changes plus the final conclusion"
+        )
+    if (
+        _is_release_deploy_job(job_id=job_id, title=title, script=script)
+        and timeout_s < MIN_RELEASE_DEPLOY_TIMEOUT_S
+    ):
+        raise JobError(
+            "release/deploy durable jobs require --timeout >= "
+            f"{MIN_RELEASE_DEPLOY_TIMEOUT_S} (90 minutes)"
+        )
 
 
 def background_guard_reason(tool_input: dict[str, Any]) -> str | None:
@@ -137,6 +173,12 @@ def create_job(
         raise JobError(f"cannot read script {script_path}: {exc}") from exc
     if not script.strip():
         raise JobError("job script is empty")
+    validate_job_script(
+        job_id=job_id,
+        title=title,
+        script=script,
+        timeout_s=timeout_s,
+    )
 
     directory = job_dir(job_id, root=root)
     if directory.exists():

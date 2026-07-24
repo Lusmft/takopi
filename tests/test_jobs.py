@@ -23,7 +23,7 @@ def test_create_job_copies_script_and_spec(tmp_path: Path) -> None:
         job_id="deploy-v044",
         script_path=script,
         chat_id=123,
-        timeout_s=60,
+        timeout_s=jobs.MIN_RELEASE_DEPLOY_TIMEOUT_S,
         title="deploy v0.4.4",
         root=tmp_path / "jobs",
     )
@@ -33,9 +33,55 @@ def test_create_job_copies_script_and_spec(tmp_path: Path) -> None:
     )
     spec = json.loads((directory / "spec.json").read_text(encoding="utf-8"))
     assert spec["chat_id"] == 123
-    assert spec["timeout_s"] == 60
+    assert spec["timeout_s"] == jobs.MIN_RELEASE_DEPLOY_TIMEOUT_S
     state = json.loads((directory / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "queued"
+
+
+def test_release_job_requires_ninety_minute_timeout(tmp_path: Path) -> None:
+    script = tmp_path / "source.sh"
+    script.write_text("#!/bin/bash\nmake release\n", encoding="utf-8")
+
+    with pytest.raises(jobs.JobError, match="90 minutes"):
+        jobs.create_job(
+            job_id="release-v044",
+            script_path=script,
+            chat_id=123,
+            timeout_s=1800,
+            title="release v0.4.4",
+            root=tmp_path / "jobs",
+        )
+
+
+def test_release_job_accepts_ninety_minute_timeout(tmp_path: Path) -> None:
+    script = tmp_path / "source.sh"
+    script.write_text("#!/bin/bash\nmake release\n", encoding="utf-8")
+
+    directory = jobs.create_job(
+        job_id="release-v044",
+        script_path=script,
+        chat_id=123,
+        timeout_s=jobs.MIN_RELEASE_DEPLOY_TIMEOUT_S,
+        title="release v0.4.4",
+        root=tmp_path / "jobs",
+    )
+
+    assert directory.exists()
+
+
+def test_durable_job_rejects_interactive_gh_run_watch(tmp_path: Path) -> None:
+    script = tmp_path / "source.sh"
+    script.write_text("#!/bin/bash\ngh run watch 123 --exit-status\n", encoding="utf-8")
+
+    with pytest.raises(jobs.JobError, match="must not use interactive"):
+        jobs.create_job(
+            job_id="deploy-v044",
+            script_path=script,
+            chat_id=123,
+            timeout_s=jobs.MIN_RELEASE_DEPLOY_TIMEOUT_S,
+            title="deploy v0.4.4",
+            root=tmp_path / "jobs",
+        )
 
 
 def test_launch_job_uses_transient_systemd_unit(monkeypatch) -> None:
@@ -114,7 +160,7 @@ def test_worker_records_success_and_notifies(monkeypatch, tmp_path: Path) -> Non
         job_id="deploy",
         script_path=script,
         chat_id=123,
-        timeout_s=60,
+        timeout_s=jobs.MIN_RELEASE_DEPLOY_TIMEOUT_S,
         title="release",
         root=root,
     )
