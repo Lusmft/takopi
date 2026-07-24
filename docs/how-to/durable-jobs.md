@@ -22,9 +22,14 @@ SH
 takopi jobs start deploy-v044-$(date +%s) \
   --script /tmp/wait-for-deploy.sh \
   --chat-id 123456789 \
-  --timeout 3600 \
+  --timeout 5400 \
   --title "deploy v0.4.4"
 ```
+
+Release and deploy jobs require a timeout of at least 90 minutes. Takopi
+rejects `gh run watch` inside durable jobs because its interactive refresh
+output floods Telegram callbacks. Poll `gh run view --json status,conclusion`
+instead, emit only state changes, and perform a final ground-truth check.
 
 Takopi copies the script into `~/.takopi/jobs/<id>/`, starts it in a transient
 systemd unit, records its state and output, and sends the final result through
