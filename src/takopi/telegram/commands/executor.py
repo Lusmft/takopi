@@ -148,6 +148,9 @@ the run finishes. If you promise to wait and act later, do not use
 run_in_background. Write a self-contained shell script, then start it with:
 `takopi jobs start <unique-id> --script <path> --chat-id {chat_id} --timeout <seconds>`.
 The durable job survives this run and sends its final output to this chat.
+For release/deploy jobs, use `--timeout 5400` or longer. Do not use interactive
+`gh run watch`; poll `gh run view --json status,conclusion` quietly, print only
+state changes, and verify the final external state before reporting success.
 """.strip()
 
 
